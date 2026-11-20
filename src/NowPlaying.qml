@@ -87,6 +87,9 @@ Rectangle {
             Layout.preferredHeight: 84
             playing: panel.playing
             colour: theme.accent
+            // Real bands while cava is feeding us frames; empty means the panel
+            // falls back to its synthetic animation (see PulseWave.qml).
+            values: visualizer.values
         }
 
         Item { Layout.fillHeight: true }

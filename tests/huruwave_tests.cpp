@@ -1,11 +1,13 @@
 #include <QtTest>
 
 #include "theme.h"
+#include "visualizer.h"
 #include "ytmusic.h"
 
-// Two things get tested here, and they are the two that fail silently in
-// production: the Omarchy theme parser (a wrong colour is invisible) and the
-// YouTube Music search parser (a wrong field just shows an empty row).
+// The things tested here are the ones that fail silently in production: the
+// Omarchy theme parser (a wrong colour is invisible), the YouTube Music search
+// parser (a wrong field just shows an empty row), and the cava frame parser (a
+// format change would look like the visualiser dying).
 class HuruwaveTests : public QObject {
     Q_OBJECT
 
@@ -14,6 +16,8 @@ private slots:
     void survivesAMissingTheme();
     void readsQuotedAndBareValues();
     void parsesYtMusicSearchPayload();
+    void parsesCavaFrames();
+    void dropsGarbledCavaFrames();
 };
 
 void HuruwaveTests::parsesOmarchyColors()
@@ -151,6 +155,46 @@ void HuruwaveTests::parsesYtMusicSearchPayload()
     // Garbage in must not produce phantom tracks.
     QVERIFY(YtMusic::parseSearchResponse(QByteArrayLiteral("not json")).isEmpty());
     QVERIFY(YtMusic::parseSearchResponse(QByteArrayLiteral("{}")).isEmpty());
+}
+
+void HuruwaveTests::parsesCavaFrames()
+{
+    // cava's raw ascii frame: values 0..100, ';' between them and a trailing
+    // delimiter before the newline (that empty last field is normal).
+    const QVector<double> frame = Visualizer::parseFrame(QByteArrayLiteral("0;50;100;25;"));
+    QCOMPARE(frame.size(), 4);
+    QCOMPARE(frame.at(0), 0.0);
+    QCOMPARE(frame.at(1), 0.5);
+    QCOMPARE(frame.at(2), 1.0);
+    QCOMPARE(frame.at(3), 0.25);
+
+    // Out-of-range values are clamped: a bar cannot overshoot the panel.
+    const QVector<double> clamped = Visualizer::parseFrame(QByteArrayLiteral("120;-5;"));
+    QCOMPARE(clamped.size(), 2);
+    QCOMPARE(clamped.at(0), 1.0);
+    QCOMPARE(clamped.at(1), 0.0);
+
+    // A silent frame is still a frame: all zeros, not an empty list, or the
+    // panel would flip to the fallback animation during every quiet passage.
+    const QVector<double> silence = Visualizer::parseFrame(QByteArrayLiteral("0;0;0;"));
+    QCOMPARE(silence.size(), 3);
+    QCOMPARE(silence.at(1), 0.0);
+}
+
+void HuruwaveTests::dropsGarbledCavaFrames()
+{
+    // A half-written or non-numeric frame is dropped whole. Drawing part of one
+    // would show a bar pattern that never existed.
+    QVERIFY(Visualizer::parseFrame(QByteArray()).isEmpty());
+    QVERIFY(Visualizer::parseFrame(QByteArrayLiteral(";;;")).isEmpty());
+    QVERIFY(Visualizer::parseFrame(QByteArrayLiteral("12;oops;30;")).isEmpty());
+
+    // A monitor source is the default sink's name plus ".monitor", and the
+    // analyser refuses to run without one -- a microphone-reactive "visualiser"
+    // is worse than none.
+    const QString source = Visualizer::defaultMonitorSource();
+    if (!source.isEmpty())
+        QVERIFY(source.endsWith(QStringLiteral(".monitor")));
 }
 
 QTEST_MAIN(HuruwaveTests)

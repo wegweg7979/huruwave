@@ -16,6 +16,7 @@
 
 #include "player.h"
 #include "theme.h"
+#include "visualizer.h"
 #include "ytmusic.h"
 
 namespace {
@@ -90,6 +91,7 @@ int main(int argc, char *argv[])
     Theme theme;
     YtMusic provider;
     Player player;
+    Visualizer visualizer;
 
     // The cookie source is decided once and given to BOTH the provider and the
     // engine: mpv plays YouTube Music URLs itself (through yt-dlp), so it needs
@@ -109,6 +111,16 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty(QStringLiteral("theme"), &theme);
     engine.rootContext()->setContextProperty(QStringLiteral("player"), &player);
     engine.rootContext()->setContextProperty(QStringLiteral("ytmusic"), &provider);
+    engine.rootContext()->setContextProperty(QStringLiteral("visualizer"), &visualizer);
+
+    // The analyser listens to the OUTPUT device, so it runs only while a stream
+    // is loaded: pausing keeps it alive (real silence is a flat line, which is
+    // honest and avoids respawning a process every pause), and it stops when the
+    // engine goes idle and with the app. A music player that keeps an FFT running
+    // behind an idle window is just burning battery.
+    QObject::connect(&player, &Player::stateChanged, &visualizer, [&player, &visualizer] {
+        visualizer.setActive(player.playing());
+    });
     // A search given on the command line is run by the window once it exists,
     // which makes `huruwave --search 'boards of canada'` a usable demo.
     engine.rootContext()->setContextProperty(QStringLiteral("initialQuery"), query);

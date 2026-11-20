@@ -17,6 +17,11 @@ mark the current row, and no Material chrome.
 - **mpv** over its JSON IPC socket is the audio engine. mpv resolves YouTube
   URLs through `yt-dlp` itself, plays every codec a local library can hold, and
   plays gaplessly — none of which Qt Multimedia does without a lot of glue.
+- **cava** for the spectrum bars. It is a ~90 KB console visualiser that reads the
+  output device's monitor source and prints bar heights, so the player carries no
+  DSP of its own. On Hurunagus it ships in the image; anywhere else, install it
+  (`dnf install cava`). Without it the panel falls back to the synthetic
+  animation rather than going blank.
 - **YouTube Music's own inner API** for search (the `WEB_REMIX` client, the same
   one `ytmusicapi` and `cliamp` use). Measured alternatives: `yt-dlp` with
   `--flat-playlist` on a music search returns album browse-ids with `NA` titles,
@@ -76,9 +81,6 @@ and a single stale collection aborts the whole lookup.
 - Apple Music *streaming* (see below) — catalog search and artwork are planned.
 - A file picker: drag-and-drop and a path argument work today; the portal picker
   (`org.freedesktop.portal.FileChooser`) is the next step.
-- The visualiser is an activity indicator, **not** a spectrum analyser: the bars
-  are driven by playback state, not by the audio signal. Tapping mpv's output for
-  real bands is a separate piece of work.
 - A local-library browser: `Library`/`Album`/`Artist` views over `~/Music`.
 
 ## Why Apple Music is a separate problem
