@@ -10,7 +10,6 @@ Rectangle {
     property double position: 0
     property double duration: 0
     property string cookiedFrom: ""
-
     color: theme.darkBackground
 
     Rectangle {
@@ -80,6 +79,16 @@ Rectangle {
                 font.pixelSize: 12
                 elide: Text.ElideRight
             }
+
+            Text {
+                width: parent.width
+                visible: panel.track && panel.track.album && panel.track.album.length > 0
+                text: panel.track && panel.track.album ? panel.track.album : ""
+                color: theme.muted
+                font.family: theme.fontFamily
+                font.pixelSize: 11
+                elide: Text.ElideRight
+            }
         }
 
         PulseWave {
@@ -93,6 +102,19 @@ Rectangle {
         }
 
         Item { Layout.fillHeight: true }
+
+        // Apple serves a 30-second preview unless the track is owned outright, and
+        // saying so stops a 0:30 running time from looking like a bug.
+        Text {
+            Layout.fillWidth: true
+            visible: panel.track !== null && panel.track.url
+                     && panel.track.url.indexOf("AudioPreview") >= 0
+            text: qsTr("Apple Music preview · the full track opens in your browser")
+            color: theme.yellow
+            font.family: theme.fontFamily
+            font.pixelSize: 10
+            wrapMode: Text.WordWrap
+        }
 
         // Provenance: which account and which app the queue came from.
         Text {

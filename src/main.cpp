@@ -14,6 +14,7 @@
 #include <QQuickStyle>
 #include <QTimer>
 
+#include "applemusic.h"
 #include "player.h"
 #include "theme.h"
 #include "visualizer.h"
@@ -21,13 +22,15 @@
 
 namespace {
 
-// Headless search, so the whole path (API credentials, request, parsing) can be
+// Headless search, so the whole path (credentials, request, parsing) can be
 // driven from a shell and checked by an agent -- the pattern Omarchy's own apps
-// use. Exits 0 or 1 with the error on stderr.
-int runHeadlessSearch(YtMusic &provider, const QString &query, bool asJson)
+// use. Exits 0 or 1 with the error on stderr. Templated because both providers
+// expose the same two signals and the same search() call.
+template <typename Provider>
+int runHeadlessSearch(Provider &provider, const QString &query, bool asJson)
 {
     int exitCode = 1;
-    QObject::connect(&provider, &YtMusic::tracksReady, &provider,
+    QObject::connect(&provider, &Provider::tracksReady, &provider,
                      [&](const QVariantList &tracks) {
                          if (asJson) {
                              QJsonArray array;
@@ -47,7 +50,7 @@ int runHeadlessSearch(YtMusic &provider, const QString &query, bool asJson)
                          exitCode = 0;
                          QCoreApplication::quit();
                      });
-    QObject::connect(&provider, &YtMusic::failed, &provider, [&](const QString &message) {
+    QObject::connect(&provider, &Provider::failed, &provider, [&](const QString &message) {
         QTextStream(stderr) << "error: " << message << Qt::endl;
         exitCode = 1;
         QCoreApplication::quit();
@@ -77,11 +80,15 @@ int main(int argc, char *argv[])
     parser.setApplicationDescription(QStringLiteral("An Omarchy-native music player."));
     parser.addHelpOption();
     QCommandLineOption searchOption({QStringLiteral("s"), QStringLiteral("search")},
-                                   QStringLiteral("search YouTube Music and print the results"), QStringLiteral("query"));
+                                   QStringLiteral("search and print the results"), QStringLiteral("query"));
+    QCommandLineOption providerOption(QStringLiteral("provider"),
+                                      QStringLiteral("which catalog to search: ytmusic (default) or apple"),
+                                      QStringLiteral("name"), QStringLiteral("ytmusic"));
     QCommandLineOption jsonOption(QStringLiteral("json"), QStringLiteral("with --search: print JSON"));
     QCommandLineOption noWindowOption(QStringLiteral("no-window"),
                                       QStringLiteral("with --search: do not open the window"));
     parser.addOption(searchOption);
+    parser.addOption(providerOption);
     parser.addOption(jsonOption);
     parser.addOption(noWindowOption);
     parser.addPositionalArgument(QStringLiteral("path"),
@@ -90,6 +97,7 @@ int main(int argc, char *argv[])
 
     Theme theme;
     YtMusic provider;
+    AppleMusic apple;
     Player player;
     Visualizer visualizer;
 
@@ -104,13 +112,17 @@ int main(int argc, char *argv[])
         player.setCookieSource({}, source);
 
     const QString query = parser.value(searchOption).trimmed();
-    if (!query.isEmpty() && parser.isSet(noWindowOption))
-        return runHeadlessSearch(provider, query, parser.isSet(jsonOption));
+    const bool appleWanted = parser.value(providerOption).trimmed().toLower() == QStringLiteral("apple");
+    if (!query.isEmpty() && parser.isSet(noWindowOption)) {
+        return appleWanted ? runHeadlessSearch<AppleMusic>(apple, query, parser.isSet(jsonOption))
+                           : runHeadlessSearch<YtMusic>(provider, query, parser.isSet(jsonOption));
+    }
 
     QQmlApplicationEngine engine;
     engine.rootContext()->setContextProperty(QStringLiteral("theme"), &theme);
     engine.rootContext()->setContextProperty(QStringLiteral("player"), &player);
     engine.rootContext()->setContextProperty(QStringLiteral("ytmusic"), &provider);
+    engine.rootContext()->setContextProperty(QStringLiteral("apple"), &apple);
     engine.rootContext()->setContextProperty(QStringLiteral("visualizer"), &visualizer);
 
     // The analyser listens to the OUTPUT device, so it runs only while a stream
@@ -124,6 +136,9 @@ int main(int argc, char *argv[])
     // A search given on the command line is run by the window once it exists,
     // which makes `huruwave --search 'boards of canada'` a usable demo.
     engine.rootContext()->setContextProperty(QStringLiteral("initialQuery"), query);
+    engine.rootContext()->setContextProperty(QStringLiteral("initialProvider"),
+                                             appleWanted ? QStringLiteral("apple")
+                                                         : QStringLiteral("ytmusic"));
 
     // `huruwave /path/to/file` (or a URL) plays straight away, which makes
     // testing and desktop-file launching do the obvious thing. The window is told
@@ -145,12 +160,6 @@ int main(int argc, char *argv[])
     engine.load(QUrl(QStringLiteral("qrc:/Main.qml")));
     if (engine.rootObjects().isEmpty())
         return 1;
-
-    // A URL passed on the command line plays immediately; the model needs to know
-    // so the now-playing panel is not stuck on "Nothing playing" while audio is
-    // coming out of the speakers.
-    engine.rootContext()->setContextProperty(QStringLiteral("initialUrl"),
-                                             positional.isEmpty() ? QString() : positional.first());
 
     return app.exec();
 }

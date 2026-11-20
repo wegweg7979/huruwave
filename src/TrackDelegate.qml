@@ -11,6 +11,10 @@ Item {
     property string duration: ""
     property bool playing: false
     property bool selected: false
+    // False for a catalog row with nothing to play (an Apple track with no
+    // preview): the row still shows, but it offers its web page instead of a
+    // play triangle, so the UI never promises audio it cannot deliver.
+    property bool playable: true
 
     signal activated()
 
@@ -42,7 +46,7 @@ Item {
 
         Text {
             width: 22
-            text: row.playing ? "▶" : (row.index + 1)
+            text: row.playing ? "▶" : (row.playable ? (row.index + 1) : "↗")
             color: row.playing ? theme.accent : theme.muted
             font.family: theme.fontFamily
             font.pixelSize: 11

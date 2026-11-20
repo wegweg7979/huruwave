@@ -28,6 +28,8 @@ ApplicationWindow {
     property int repeatMode: 0   // 0 = off, 1 = all, 2 = one
     property string viewTitle: qsTr("Search")
     property string statusLine: ""
+    // Which catalog the search box talks to: "ytmusic" or "apple".
+    property string provider: "ytmusic"
 
     ListModel { id: results }
     ListModel { id: queue }
@@ -37,6 +39,16 @@ ApplicationWindow {
     function youtubeId(url) {
         const match = /[?&]v=([A-Za-z0-9_-]{11})/.exec(url)
         return match ? match[1] : ""
+    }
+
+    // True for a filename or a URL, and false for a real song title. Needed
+    // because mpv's media-title is whatever the container says: for an Apple
+    // preview it is the m4a's name, and adopting that would replace "Xtal" with
+    // "mzaf_282027520707936830.plus.aac.p.m4a".
+    function looksLikePath(text) {
+        return text.indexOf("/") >= 0
+                || text.indexOf("?") >= 0
+                || /\.(m4a|mp3|flac|opus|ogg|wav|webm|aac|m4b|mp4)$/i.test(text)
     }
 
     function trackFromUrl(url) {
@@ -51,13 +63,81 @@ ApplicationWindow {
         }
     }
 
+    // Search whichever catalog is selected. Switching provider clears the list
+    // rather than leaving one catalog's rows under the other's heading.
+    function runSearch(text) {
+        window.viewTitle = qsTr("Search")
+        results.clear()
+        window.statusLine = qsTr("searching…")
+        if (window.provider === "apple")
+            apple.search(text)
+        else
+            ytmusic.search(text)
+    }
+
+    // A row with nothing to play (an Apple track with no preview) opens its
+    // catalog page rather than pretending to play.
+    function activateTrack(list, index) {
+        if (index < 0 || index >= list.count)
+            return
+        const track = list.get(index)
+        if (track.url && track.url.length > 0) {
+            playTrack(list, index)
+            return
+        }
+        if (track.webUrl && track.webUrl.length > 0) {
+            Qt.openUrlExternally(track.webUrl)
+            window.statusLine = qsTr("no preview available — opened in your browser")
+        }
+    }
+
+    // A track that arrived as a bare URL (from the command line, or a desktop-file
+    // launch) has only a filename for a title and no artwork. When a catalog
+    // search returns the very same URL, take its metadata: the real name, artist,
+    // album and cover art. Nothing about playback changes -- the URL is the same.
+    function adoptMetadataForCurrent(tracks) {
+        if (window.currentTrack === null || !window.looksLikePath(window.currentTrack.title))
+            return
+        for (let i = 0; i < tracks.length; ++i) {
+            const row = tracks[i]
+            if (!row.url || row.url !== window.currentTrack.url)
+                continue
+            const merged = {
+                "id": row.id,
+                "title": row.title,
+                "artist": row.artist,
+                "album": row.album !== undefined ? row.album : "",
+                "duration": row.duration,
+                "thumbnail": row.thumbnail,
+                "url": row.url,
+                "webUrl": row.webUrl !== undefined ? row.webUrl : "",
+                "source": row.source !== undefined ? row.source : "",
+            }
+            window.currentTrack = merged
+            if (window.currentIndex >= 0 && window.currentIndex < queue.count)
+                queue.set(window.currentIndex, merged)
+            return
+        }
+    }
+
     function playTrack(list, index) {
         if (index < 0 || index >= list.count)
             return
         queue.clear()
-        for (let i = 0; i < list.count; ++i)
-            queue.append(list.get(i))
-        playIndex(index)
+        let queueIndex = -1
+        for (let i = 0; i < list.count; ++i) {
+            const row = list.get(i)
+            // Rows that cannot play are not queued at all, so the queue never
+            // stalls on a track that has no audio behind it.
+            if (!row.url || row.url.length === 0)
+                continue
+            if (i === index)
+                queueIndex = queue.count
+            queue.append(row)
+        }
+        if (queueIndex < 0)
+            return
+        playIndex(queueIndex)
     }
 
     function playIndex(index) {
@@ -107,10 +187,35 @@ ApplicationWindow {
             statusLine = tracks.length > 0
                 ? qsTr("%1 of %2 results").arg(results.count).arg(results.count)
                 : qsTr("nothing found")
+            window.adoptMetadataForCurrent(tracks)
         }
 
         function onFailed(message) {
             statusLine = message
+        }
+    }
+
+    Connections {
+        target: apple
+
+        function onTracksReady(tracks) {
+            results.clear()
+            for (let i = 0; i < tracks.length; ++i)
+                results.append(tracks[i])
+            // Say how many can actually be played: Apple serves a 30-second
+            // preview for most tracks and nothing at all for the rest, and the
+            // difference matters before you click.
+            let playable = 0
+            for (let i = 0; i < tracks.length; ++i)
+                if (tracks[i].url && tracks[i].url.length > 0)
+                    ++playable
+            window.statusLine = qsTr("%1 songs from Apple Music · %2 with a preview")
+                                    .arg(tracks.length).arg(playable)
+            window.adoptMetadataForCurrent(tracks)
+        }
+
+        function onFailed(message) {
+            window.statusLine = message
         }
     }
 
@@ -122,10 +227,14 @@ ApplicationWindow {
 
         // mpv knows the real title once it has resolved the stream, which is how
         // a local file or a bare URL gets a proper name instead of a filename.
+        // It is only adopted when the current title IS a filename or URL: a title
+        // that came from a provider is better than the container's metadata.
         function onMediaTitleChanged() {
             if (player.mediaTitle.length === 0 || window.currentTrack === null)
                 return
             if (window.currentTrack.title === player.mediaTitle)
+                return
+            if (!window.looksLikePath(window.currentTrack.title))
                 return
             const updated = {
                 "title": player.mediaTitle,
@@ -145,6 +254,7 @@ ApplicationWindow {
     // empty list. A URL from the command line is adopted as the current track,
     // because otherwise the panel says "Nothing playing" over audible playback.
     Component.onCompleted: {
+        window.provider = (initialProvider && initialProvider.length > 0) ? initialProvider : "ytmusic"
         if (initialUrl && initialUrl.length > 0) {
             const track = window.trackFromUrl(initialUrl)
             queue.clear()
@@ -154,7 +264,7 @@ ApplicationWindow {
         }
         if (initialQuery && initialQuery.length > 0) {
             searchField.text = initialQuery
-            ytmusic.search(initialQuery)
+            window.runSearch(initialQuery)
         }
     }
 
@@ -223,6 +333,34 @@ ApplicationWindow {
                         elide: Text.ElideRight
                     }
 
+                    // Which catalog the search box is pointed at. Two words, not a
+                    // dropdown: there are only ever two, and the accent marks the
+                    // live one.
+                    Row {
+                        Layout.alignment: Qt.AlignVCenter
+                        spacing: 14
+
+                        Text {
+                            text: qsTr("YT MUSIC")
+                            color: window.provider === "ytmusic" ? theme.accent : theme.muted
+                            font.family: theme.fontFamily
+                            font.pixelSize: 11
+                            font.letterSpacing: 1
+                            HoverHandler { cursorShape: Qt.PointingHandCursor }
+                            TapHandler { onTapped: window.provider = "ytmusic" }
+                        }
+
+                        Text {
+                            text: qsTr("APPLE MUSIC")
+                            color: window.provider === "apple" ? theme.accent : theme.muted
+                            font.family: theme.fontFamily
+                            font.pixelSize: 11
+                            font.letterSpacing: 1
+                            HoverHandler { cursorShape: Qt.PointingHandCursor }
+                            TapHandler { onTapped: window.provider = "apple" }
+                        }
+                    }
+
                     // A flat TextInput, not a Material TextField: Material floats
                     // its placeholder up as a label, which collides with whatever
                     // is beside it and reads as ghosted double text (seen in a
@@ -242,17 +380,16 @@ ApplicationWindow {
                             selectByMouse: true
                             clip: true
                             verticalAlignment: TextInput.AlignVCenter
-                            onAccepted: {
-                                window.viewTitle = qsTr("Search")
-                                ytmusic.search(text)
-                            }
+                            onAccepted: window.runSearch(text)
                         }
 
                         Text {
                             anchors.left: parent.left
                             anchors.verticalCenter: searchField.verticalCenter
                             visible: searchField.text.length === 0 && !searchField.activeFocus
-                            text: qsTr("Search YouTube Music")
+                            text: window.provider === "apple"
+                                  ? qsTr("Search Apple Music")
+                                  : qsTr("Search YouTube Music")
                             color: theme.muted
                             font.family: theme.fontFamily
                             font.pixelSize: 13
@@ -283,6 +420,7 @@ ApplicationWindow {
                     title: model.title
                     artist: model.artist
                     duration: model.duration
+                    playable: model.url && model.url.length > 0
                     playing: model.index === window.currentIndex
                     onActivated: window.playIndex(model.index)
                 }
@@ -303,10 +441,11 @@ ApplicationWindow {
                     title: model.title
                     artist: model.artist
                     duration: model.duration
+                    playable: model.url && model.url.length > 0
                     selected: ListView.isCurrentItem
                     playing: window.currentTrack !== null
                              && window.currentTrack.url === model.url
-                    onActivated: window.playTrack(results, model.index)
+                    onActivated: window.activateTrack(results, model.index)
                 }
 
                 // A list with nothing in it says why, rather than looking broken.

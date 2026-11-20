@@ -207,12 +207,15 @@ YtMusic::~YtMusic()
 
 QString YtMusic::resolveCookieSource(QString *kind)
 {
+    // 1. A Netscape cookies file, which is what bin/import-cookies writes and the
+    //    only source that needs no keyring at all.
     const QString cookiesFile = QDir::homePath() + kCookiesFile;
     if (QFileInfo::exists(cookiesFile)) {
         if (kind)
             *kind = QStringLiteral("file");
         return cookiesFile;
     }
+    // 2. This app's own config, which is an explicit choice and wins over any guess.
     const QString own = readKey(QDir::homePath() + QStringLiteral("/.config/huruwave/config.toml"),
                                QStringLiteral("cookies_from"));
     if (!own.isEmpty()) {
@@ -220,6 +223,17 @@ QString YtMusic::resolveCookieSource(QString *kind)
             *kind = QStringLiteral("browser");
         return own;
     }
+    // 3. Firefox, if there is a profile. It is preferred over the inherited cliamp
+    //    setting below because Firefox cookies are read straight from a plain
+    //    sqlite file: no Secret Service, no keyring, none of the decryption
+    //    failures that make the Chromium path fragile on this machine.
+    if (QFileInfo::exists(QDir::homePath() + QStringLiteral("/.mozilla/firefox/profiles.ini"))) {
+        if (kind)
+            *kind = QStringLiteral("browser");
+        return QStringLiteral("firefox");
+    }
+    // 4. Last: whatever cliamp is configured with, so an existing setup is
+    //    inherited rather than re-configured.
     const QString inherited = readKey(QDir::homePath() + QStringLiteral("/.config/cliamp/config.toml"),
                                       QStringLiteral("cookies_from"));
     if (!inherited.isEmpty()) {

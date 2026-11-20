@@ -127,6 +127,12 @@ void Player::startEngine()
         QStringLiteral("--volume=%1").arg(m_volume),
     };
 
+    // Test seam: HURUWAVE_AO=null lets playback be verified without making a
+    // sound (the app is often exercised while somebody is using the machine).
+    const QByteArray audioOutput = qgetenv("HURUWAVE_AO");
+    if (!audioOutput.isEmpty())
+        args << QStringLiteral("--ao=%1").arg(QString::fromLocal8Bit(audioOutput));
+
     // yt-dlp options are split by commas, so a value containing one cannot be
     // passed -- which is fine: paths and browser specs never contain commas.
     QStringList ytdl;

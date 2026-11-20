@@ -1,13 +1,16 @@
 #include <QtTest>
 
+#include "applemusic.h"
 #include "theme.h"
 #include "visualizer.h"
 #include "ytmusic.h"
 
 // The things tested here are the ones that fail silently in production: the
 // Omarchy theme parser (a wrong colour is invisible), the YouTube Music search
-// parser (a wrong field just shows an empty row), and the cava frame parser (a
-// format change would look like the visualiser dying).
+// parser (a wrong field just shows an empty row), the Apple Music mapping (an
+// upscale that never happens, or a preview that is offered when there is none),
+// and the cava frame parser (a format change would look like the visualiser
+// dying).
 class HuruwaveTests : public QObject {
     Q_OBJECT
 
@@ -16,6 +19,7 @@ private slots:
     void survivesAMissingTheme();
     void readsQuotedAndBareValues();
     void parsesYtMusicSearchPayload();
+    void parsesAppleMusicSearchPayload();
     void parsesCavaFrames();
     void dropsGarbledCavaFrames();
 };
@@ -195,6 +199,65 @@ void HuruwaveTests::dropsGarbledCavaFrames()
     const QString source = Visualizer::defaultMonitorSource();
     if (!source.isEmpty())
         QVERIFY(source.endsWith(QStringLiteral(".monitor")));
+}
+
+// Apple's catalog answer, mapped with no network. Two things matter beyond the
+// field names: the artwork must come back upscaled (the API serves a 100 px
+// thumbnail by default) and `playable` must reflect whether Apple actually
+// published a preview, because that is what the UI offers to play.
+void HuruwaveTests::parsesAppleMusicSearchPayload()
+{
+    const QJsonObject withPreview{
+        {QStringLiteral("trackName"), QStringLiteral("Turquoise Hexagon Sun")},
+        {QStringLiteral("artistName"), QStringLiteral("Boards of Canada")},
+        {QStringLiteral("collectionName"), QStringLiteral("Music Has the Right to Children")},
+        {QStringLiteral("trackId"), 281116078},
+        {QStringLiteral("trackTimeMillis"), 307880},
+        {QStringLiteral("artworkUrl100"),
+         QStringLiteral("https://is1-ssl.mzstatic.com/image/thumb/Music/abc/100x100bb.jpg")},
+        {QStringLiteral("previewUrl"), QStringLiteral("https://audio-ssl.itunes.apple.com/AudioPreview211/x.m4a")},
+        {QStringLiteral("trackViewUrl"), QStringLiteral("https://music.apple.com/gb/album/x/281116024?i=281116078")}};
+
+    // A collection shares this endpoint and has no trackName: it must be skipped
+    // rather than rendered as an empty row.
+    const QJsonObject collection{{QStringLiteral("collectionName"), QStringLiteral("Inferno")},
+                                 {QStringLiteral("collectionId"), 1890015523}};
+
+    // A track with no previewUrl is listed but not playable.
+    const QJsonObject noPreview{
+        {QStringLiteral("trackName"), QStringLiteral("Father And Son")},
+        {QStringLiteral("artistName"), QStringLiteral("Boards of Canada")},
+        {QStringLiteral("trackTimeMillis"), 204835},
+        {QStringLiteral("artworkUrl100"), QStringLiteral("https://is1-ssl.mzstatic.com/thumb/100x100bb.jpg")}};
+
+    const QJsonObject payload{{QStringLiteral("resultCount"), 3},
+                              {QStringLiteral("results"), QJsonArray{withPreview, collection, noPreview}}};
+    const QByteArray encoded = QJsonDocument(payload).toJson(QJsonDocument::Compact);
+
+    const QVariantList tracks = AppleMusic::parseResults(encoded);
+    QCOMPARE(tracks.size(), 2);  // the collection is dropped
+
+    const QVariantMap first = tracks.at(0).toMap();
+    QCOMPARE(first.value("title").toString(), QStringLiteral("Turquoise Hexagon Sun"));
+    QCOMPARE(first.value("artist").toString(), QStringLiteral("Boards of Canada"));
+    QCOMPARE(first.value("album").toString(), QStringLiteral("Music Has the Right to Children"));
+    QCOMPARE(first.value("duration").toString(), QStringLiteral("5:07"));  // from 307880 ms
+    QCOMPARE(first.value("playable").toBool(), true);
+    QCOMPARE(first.value("source").toString(), QStringLiteral("apple"));
+    QVERIFY(first.value("thumbnail").toString().endsWith(QStringLiteral("600x600bb.jpg")));
+    QVERIFY(!first.value("thumbnail").toString().contains(QStringLiteral("100x100")));
+    QCOMPARE(first.value("url").toString(), first.value("url").toString());  // the preview
+    QVERIFY(first.value("url").toString().contains(QStringLiteral("AudioPreview")));
+    QVERIFY(first.value("webUrl").toString().startsWith(QStringLiteral("https://music.apple.com/")));
+
+    const QVariantMap third = tracks.at(1).toMap();
+    QCOMPARE(third.value("title").toString(), QStringLiteral("Father And Son"));
+    QCOMPARE(third.value("duration").toString(), QStringLiteral("3:24"));
+    QCOMPARE(third.value("playable").toBool(), false);
+    QVERIFY(third.value("url").toString().isEmpty());
+
+    QVERIFY(AppleMusic::parseResults(QByteArrayLiteral("not json")).isEmpty());
+    QVERIFY(AppleMusic::parseResults(QByteArrayLiteral("{}")).isEmpty());
 }
 
 QTEST_MAIN(HuruwaveTests)
