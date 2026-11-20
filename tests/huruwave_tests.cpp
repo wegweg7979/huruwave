@@ -3,6 +3,7 @@
 #include <QFile>
 
 #include "applemusic.h"
+#include "config.h"
 #include "theme.h"
 #include "visualizer.h"
 #include "ytmusic.h"
@@ -23,6 +24,7 @@ private slots:
     void parsesYtMusicSearchPayload();
     void parsesAppleMusicSearchPayload();
     void describesCookieSessions();
+    void readsConfigValues();
     void parsesCavaFrames();
     void dropsGarbledCavaFrames();
 };
@@ -312,6 +314,34 @@ void HuruwaveTests::describesCookieSessions()
     const QString browser = YtMusic::describeCookieSource(QStringLiteral("firefox"), QStringLiteral("browser"));
     QVERIFY(browser.contains(QStringLiteral("firefox")));
     QVERIFY(!browser.startsWith(QStringLiteral("signed in")));
+}
+
+// The settings file also carries cookies_from, so the reader has to cope with the
+// shapes a hand-edited line arrives in: bare values, quoted values, trailing
+// comments, and keys that are not there at all.
+void HuruwaveTests::readsConfigValues()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.path() + QStringLiteral("/config.toml");
+
+    QVERIFY(Config::readFrom(path, QStringLiteral("cookies_from")).isEmpty());
+
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Text));
+    file.write("# a comment line\n"
+               "cookies_from = \"brave+gnomekeyring:/home/you/.config/BraveSoftware/Brave-Origin/Default\"\n"
+               "commented = 0.5 # a trailing comment is not part of the value\n"
+               "  spaced   =   bare-value  \n");
+    file.close();
+
+    QCOMPARE(Config::readFrom(path, QStringLiteral("cookies_from")),
+             QStringLiteral("brave+gnomekeyring:/home/you/.config/BraveSoftware/Brave-Origin/Default"));
+    QCOMPARE(Config::readFrom(path, QStringLiteral("commented")), QStringLiteral("0.5"));
+    QCOMPARE(Config::readFrom(path, QStringLiteral("spaced")), QStringLiteral("bare-value"));
+    QVERIFY(Config::readFrom(path, QStringLiteral("missing")).isEmpty());
+    // A key that merely starts the same way must not match.
+    QVERIFY(Config::readFrom(path, QStringLiteral("cook")).isEmpty());
 }
 
 QTEST_MAIN(HuruwaveTests)

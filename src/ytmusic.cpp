@@ -1,5 +1,7 @@
 #include "ytmusic.h"
 
+#include "config.h"
+
 #include <QDebug>
 #include <QDir>
 #include <QFile>
@@ -148,21 +150,8 @@ void collectSongs(const QJsonValue &node, QVariantList *out)
     }
 }
 
-// Omarchy-style flat TOML, read with a line parser for the one key we need.
-QString readKey(const QString &path, const QString &key)
-{
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
-        return {};
-    const QRegularExpression re(
-        QStringLiteral(R"re(^\s*%1\s*=\s*"([^"]*)"\s*$)re").arg(QRegularExpression::escape(key)));
-    while (!file.atEnd()) {
-        const auto match = re.match(QString::fromUtf8(file.readLine()));
-        if (match.hasMatch())
-            return match.captured(1);
-    }
-    return {};
-}
+// Omarchy-style flat TOML: one shared parser lives in config.cpp, because the
+// same file also holds the opacity settings.
 
 }  // namespace
 
@@ -292,8 +281,7 @@ QString YtMusic::resolveCookieSource(QString *kind)
     const QString cookiesFile = QDir::homePath() + kCookiesFile;
 
     // 1. This app's own config, because it is an explicit choice.
-    const QString own = readKey(QDir::homePath() + QStringLiteral("/.config/huruwave/config.toml"),
-                               QStringLiteral("cookies_from"));
+    const QString own = Config::read(QStringLiteral("cookies_from"));
     if (!own.isEmpty()) {
         if (kind)
             *kind = QStringLiteral("browser");
@@ -333,8 +321,9 @@ QString YtMusic::resolveCookieSource(QString *kind)
     }
     // 5. Last: whatever cliamp is configured with, so an existing setup is
     //    inherited rather than re-configured.
-    const QString inherited = readKey(QDir::homePath() + QStringLiteral("/.config/cliamp/config.toml"),
-                                      QStringLiteral("cookies_from"));
+    const QString inherited = Config::readFrom(
+        QDir::homePath() + QStringLiteral("/.config/cliamp/config.toml"),
+        QStringLiteral("cookies_from"));
     if (!inherited.isEmpty()) {
         if (kind)
             *kind = QStringLiteral("browser");

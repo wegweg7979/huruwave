@@ -116,6 +116,33 @@ practice: if the exporter cannot decrypt the *account* cookies, it still writes
 out the plain ones and looks successful, which is exactly how a broken export
 passes for a working one.
 
+## Window opacity
+
+Opacity is the **compositor's** job on this desktop, not the app's, so huruwave is
+opted in from the Hyprland config — one line in `~/.config/hypr/looknfeel.lua`:
+
+```lua
+o.transparent_window("huruwave", "0.94 0.90")   -- active / inactive
+```
+
+Then reload (`hyprctl reload config-only`) and restart the app, because the rule
+applies as the window maps. Commenting the line out takes it back to opaque. This
+also means **Appearance → Windows → Window Opacity** governs huruwave like any
+other Omarchy app, instead of one app having its own private idea of transparency.
+
+Three things were tried and rejected before settling here, all measured on this
+machine:
+
+- **Qt can't do it.** `QWindow::setOpacity` is a no-op on Wayland: the protocol
+  has no per-surface alpha.
+- **`hyprctl setprop` / `getprop` are stubbed** in this fork — they answer
+  "unknown request".
+- **`hl.dsp.window.set_prop` cannot be trusted.** It accepts a call for a property
+  that cannot exist (`prop = "not_a_prop"`) and for a field that cannot exist
+  (`wibble = 1`), and answers `ok` to all of them; screenshots of the window at
+  `value = 0.55` were pixel-identical. A call that always says "ok" is not
+  evidence, and an app relying on it would be lying to itself.
+
 ## Not in yet
 
 - Apple Music *streaming* — see below for what is possible and why.
