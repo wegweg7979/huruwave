@@ -1,0 +1,36 @@
+#!/bin/sh
+# Rewrites rpm/huruwave.spec.sources with the sha256 of the release tarball that
+# the spec's Source0 points at.
+#
+# The hash cannot be known before the tag exists — GitHub generates the archive
+# from the tag — so this is a step of its own, run after the version bump has
+# been committed and the tag pushed. COPR verifies the hash when it fetches the
+# sources, so a stale one fails the build rather than shipping the wrong tree.
+set -eu
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+SPEC="$ROOT/rpm/huruwave.spec"
+
+VERSION="$(sed -n 's/^Version:[[:space:]]*//p' "$SPEC" | head -1)"
+if [ -z "$VERSION" ]; then
+    echo "spec-sources: no Version: line in $SPEC" >&2
+    exit 1
+fi
+
+URL="https://github.com/wegweg7979/huruwave/archive/refs/tags/v$VERSION/huruwave-$VERSION.tar.gz"
+TARBALL="huruwave-$VERSION.tar.gz"
+
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+
+echo "spec-sources: fetching $URL"
+curl -sSfL "$URL" -o "$TMP/$TARBALL"
+
+# Proof it is the right tree, not just a redirect body: the archive must carry
+# the tag's directory, and the tag's tree must contain this very script.
+tar -tzf "$TMP/$TARBALL" "huruwave-$VERSION/bin/spec-sources" >/dev/null
+
+HASH="$(sha256sum "$TMP/$TARBALL" | cut -d' ' -f1)"
+printf '%s  %s\n' "$HASH" "$TARBALL" > "$ROOT/rpm/huruwave.spec.sources"
+echo "spec-sources: wrote $ROOT/rpm/huruwave.spec.sources"
+cat "$ROOT/rpm/huruwave.spec.sources"

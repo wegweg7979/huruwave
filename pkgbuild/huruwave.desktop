@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=huruwave
+Comment=An Omarchy-native music player: YouTube Music, Apple Music search and local files
+Exec=huruwave
+Icon=huruwave
+Terminal=false
+Categories=AudioVideo;Audio;Player;
+StartupWMClass=huruwave
