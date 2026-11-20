@@ -27,6 +27,26 @@ target_compile_options(huruwave_core PUBLIC -Wall -Wextra)
 add_executable(huruwave src/main.cpp src/resources.qrc)
 target_link_libraries(huruwave PRIVATE huruwave_core)
 
+# Full-track Apple Music. Apple's catalog API serves a 30-second preview and the
+# full track is DRM-protected, which needs a Widevine CDM — and mpv, the engine
+# everything else plays through, cannot load one. QtWebEngine (an embedded
+# Chromium) can, so the DRM surface is built from it.
+#
+# OFF by default so a plain `bin/build` on a machine without the web engine still
+# builds (the feature is then absent and the panel keeps pointing at the browser).
+# The package turns it ON, and the spec carries the matching BuildRequires, so a
+# green COPR build cannot ship a huruwave without it.
+#
+# The CDM itself is never built in, linked or installed: the app only looks for the
+# copy the user's own browser downloaded (see src/widevine.cpp).
+option(HURUWAVE_APPLE_WEB
+       "Build the in-app Apple Music DRM surface (needs qt6-qtwebengine-devel)" OFF)
+if(HURUWAVE_APPLE_WEB)
+  find_package(Qt6 REQUIRED COMPONENTS WebEngineQuick)
+  target_link_libraries(huruwave PRIVATE Qt6::WebEngineQuick)
+  target_compile_definitions(huruwave PRIVATE HURUWAVE_APPLE_WEB=1)
+endif()
+
 enable_testing()
 add_executable(huruwave_tests tests/huruwave_tests.cpp)
 target_link_libraries(huruwave_tests PRIVATE huruwave_core Qt6::Test)

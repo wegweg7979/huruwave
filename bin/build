@@ -2,5 +2,9 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
-cmake -S "$root" -B "$root/build" -DCMAKE_BUILD_TYPE=Release >/dev/null
+# HURUWAVE_APPLE_WEB=ON adds the in-app Apple Music DRM surface, which needs
+# qt6-qtwebengine-devel — not installable on an immutable host, so build it in a
+# container of the image (or let the package do it: rpm/huruwave.spec passes ON).
+cmake -S "$root" -B "$root/build" -DCMAKE_BUILD_TYPE=Release \
+  -DHURUWAVE_APPLE_WEB="${HURUWAVE_APPLE_WEB:-OFF}" >/dev/null
 cmake --build "$root/build" -j"$(nproc)"

@@ -14,7 +14,7 @@
 %global debug_package %{nil}
 
 Name:           huruwave
-Version:        0.1.0
+Version:        0.2.0
 Release:        1%{?dist}
 Summary:        An Omarchy-native music player: YouTube Music, Apple Music search and local files
 
@@ -39,6 +39,13 @@ BuildRequires:  desktop-file-utils
 # package any more. QtTest comes with qt6-qtbase-devel.
 BuildRequires:  qt6-qtbase-devel
 BuildRequires:  qt6-qtdeclarative-devel
+# The in-app Apple Music DRM surface (HURUWAVE_APPLE_WEB=ON, below) is QtWebEngine:
+# an embedded Chromium, because Apple's full tracks are DRM-protected and mpv cannot
+# use a CDM at all. The CDM itself is NOT a dependency of anything here — it is
+# proprietary and licensed per person, so the app only looks for the copy the user's
+# own browser already downloaded (see src/widevine.cpp), and says so in
+# `huruwave --widevine-status` when there is none.
+BuildRequires:  qt6-qtwebengine-devel
 
 # Runtime, not linked. mpv is the audio engine over its JSON IPC socket, and it
 # resolves YouTube URLs through yt-dlp itself, so both are hard requirements: the
@@ -49,6 +56,11 @@ Requires:       yt-dlp
 Requires:       qt6-qtbase
 Requires:       qt6-qtdeclarative
 Requires:       qt6-qtwayland
+# Linked, not optional: a build with the DRM surface needs the web engine at run
+# time, so on a machine without this package the app would not start at all. It is
+# what plays Apple's full tracks in-window (the Widevine CDM it also needs is the
+# user's own, and is looked for rather than depended on).
+Requires:       qt6-qtwebengine
 # cava is the analyser behind the spectrum bars. Without it the panel falls back
 # to the synthetic animation rather than going blank, so it is a Recommends and
 # not a Requires (the hurunagus images install it themselves).
@@ -57,24 +69,39 @@ Recommends:     cava
 %description
 huruwave plays music from three places in one window that follows the desktop
 theme: YouTube Music (search, your own playlists, queue, scrub, shuffle, repeat),
-the Apple Music catalog (search and Apple's 30-second previews) and local files
+the Apple Music catalog (search, Apple's 30-second previews, and — with the DRM
+surface built in — the full tracks in-window through Apple's own web player) and
+local files
 dropped on the window.
 
 The audio engine is mpv over its JSON IPC socket and the spectrum bars are drawn
-from cava, so the player carries no DSP of its own. Everything it knows about its
+from cava, so the player carries no DSP of its own. Full Apple Music tracks play
+in-window through an embedded Chromium (QtWebEngine): they are DRM-protected, so
+that panel borrows a Widevine CDM and an Apple session from the user's own browser
+(`huruwave-apple-session` writes the session; neither is ever shipped with this
+package). Everything it knows about its
 two catalogs — including which cookie source the session came from — is readable
 from a shell as well as from the window (`huruwave --search ... --no-window`,
-`huruwave --playlist LM --no-window`, `huruwave --cookies-status`).
+`huruwave --playlist LM --no-window`, `huruwave --cookies-status`,
+`huruwave --widevine-status`).
 
 %prep
 %autosetup -n %{name}-%{version}
 
 %build
-%cmake -DCMAKE_BUILD_TYPE=Release
+# HURUWAVE_APPLE_WEB=ON is the packaged default: the DRM surface is what the release
+# is for, and the BuildRequires above guarantee it can be built. A plain
+# `bin/build` leaves it OFF, so a machine without qt6-qtwebengine-devel still gets
+# a working player (one that hands full Apple tracks to the browser).
+%cmake -DCMAKE_BUILD_TYPE=Release -DHURUWAVE_APPLE_WEB=ON
 %cmake_build
 
 %install
 install -D -m 0755 %{_vpath_builddir}/huruwave %{buildroot}%{_bindir}/huruwave
+# The borrowed-session helper. It is part of the product, not a dev script: without
+# it a packaged user cannot get an Apple session into the DRM panel (Apple's own
+# sign-in does not work in an embedded browser on this Qt).
+install -D -m 0755 bin/apple-session %{buildroot}%{_bindir}/huruwave-apple-session
 install -D -m 0644 pkgbuild/huruwave.svg \
   %{buildroot}%{_datadir}/icons/hicolor/scalable/apps/huruwave.svg
 install -D -m 0644 pkgbuild/huruwave.desktop \
@@ -91,10 +118,21 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/huruwave.desktop
 %license LICENSE
 %doc README.md
 %{_bindir}/huruwave
+%{_bindir}/huruwave-apple-session
 %{_datadir}/icons/hicolor/scalable/apps/huruwave.svg
 %{_datadir}/applications/huruwave.desktop
 
 %changelog
+* Fri Nov 20 2026 wegweg7979 <diode-crumble-0h@icloud.com> - 0.2.0-1
+- Full Apple Music tracks now play in-window: a QtWebEngine surface
+  (HURUWAVE_APPLE_WEB, on in the package) shows Apple's own web player, using a
+  Widevine CDM and an Apple session borrowed per-user from the browser that
+  already has them. Neither is shipped. Apple's own sign-in does not work in an
+  embedded browser on this Qt, so the surface never tries it.
+- New: huruwave-apple-session (borrow the session), --widevine-status (what this
+  build and machine have) and --apple-web (open a track in the surface); F opens
+  the full track of a preview; the spectrum analyser follows the web surface too.
+- Requires qt6-qtwebengine, which is what makes the surface possible.
 * Fri Nov 20 2026 wegweg7979 <diode-crumble-0h@icloud.com> - 0.1.0-1
 - First release: YouTube Music search and playlists, the Apple Music catalog with
   its 30-second previews, the local library, cava-backed spectrum bars, and the

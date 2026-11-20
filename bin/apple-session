@@ -1,0 +1,94 @@
+#!/bin/bash
+# Borrows your browser's Apple session for huruwave's DRM surface.
+#
+# Why this exists: Apple's own sign-in does not work in QtWebEngine on this Qt — its
+# JS dies against Apple's anti-abuse endpoints and the modal spins forever. The
+# session itself does work, so the surface borrows the one your browser already has,
+# exactly the way huruwave already borrows your YouTube Music session for search and
+# playlists. That makes this a PER-USER step: the cookie file it writes lives in your
+# $HOME, is never part of the package, and stops working when you sign out in the
+# browser (re-run this then).
+#
+# Usage: bin/apple-session [browser-spec] [output-file]
+#   browser-spec  what yt-dlp reads cookies from, e.g. "brave+gnomekeyring:$HOME/.config/BraveSoftware/Brave-Origin/Default"
+#                 (default: the `cookies_from` value in ~/.config/huruwave/config.toml,
+#                  which the YouTube Music side already uses)
+#   output-file   where the jar goes (default: ~/.local/share/huruwave/apple-cookies.txt)
+set -euo pipefail
+
+me="$(basename "$0")"
+
+config="$HOME/.config/huruwave/config.toml"
+fallback="$HOME/.config/cliamp/config.toml"
+
+read_key() {  # the same flat `key = value` reading the app does
+    local file="$1" key="$2"
+    [ -f "$file" ] || return 1
+    sed -n "s/^[[:space:]]*$key[[:space:]]*=[[:space:]]*\(.*\)$/\1/p" "$file" |
+        head -1 | sed 's/^"//; s/"[[:space:]]*$//; s/[[:space:]]*#.*$//'
+}
+
+spec="${1:-}"
+if [ -z "$spec" ]; then
+    spec="$(read_key "$config" cookies_from || true)"
+    [ -n "$spec" ] || spec="$(read_key "$fallback" cookies_from || true)"
+fi
+if [ -z "$spec" ]; then
+    echo "error: no browser cookie source. Pass one, e.g." >&2
+    echo "  $me 'brave+gnomekeyring:$HOME/.config/BraveSoftware/Brave-Origin/Default'" >&2
+    echo "or set cookies_from in $config." >&2
+    exit 2
+fi
+
+out="${2:-$HOME/.local/share/huruwave/apple-cookies.txt}"
+mkdir -p "$(dirname "$out")"
+
+command -v yt-dlp >/dev/null || { echo "error: yt-dlp is not installed (it does the keyring decryption)" >&2; exit 2; }
+
+# yt-dlp writes the jar it loaded and THEN fails, because it has no extractor for
+# Apple Music. That non-zero exit is expected — the artifact is what counts, so the
+# exit code is deliberately not the test.
+# yt-dlp loads --cookies when it EXISTS and refuses an empty one ("does not look
+# like a Netscape format cookies file"), so the output has to be a path that is not
+# there yet — hence the fresh temp directory rather than mktemp's empty file.
+tmpdir="$(mktemp -d)"
+tmp="$tmpdir/cookies.txt"
+trap 'rm -rf "$tmpdir"' EXIT
+
+yt-dlp --cookies-from-browser "$spec" --cookies "$tmp" \
+       --simulate --skip-download --no-warnings "https://music.apple.com/" >/dev/null 2>&1 || true
+
+if [ ! -s "$tmp" ]; then
+    echo "error: no cookies came back from '$spec'." >&2
+    echo "  A browser source needs the profile path, and the keyring unlocked." >&2
+    exit 1
+fi
+
+# Keep only what the surface needs; the app re-filters too, but a jar that is mostly
+# Google cookies is confusing to inspect.
+{
+    echo "# Netscape HTTP Cookie File"
+    echo "# Apple cookies borrowed from: $spec"
+    echo "# Written by huruwave's bin/apple-session. Per-user; never shipped."
+    grep -E '^#HttpOnly_\.?[^	]*apple\.com|^\.?[^	]*apple\.com	' "$tmp" || true
+} > "$out"
+chmod 600 "$out"
+n=$(grep -vc '^#' "$out" || true)
+
+echo "wrote $out"
+echo "  source:   $spec"
+echo "  cookies:  $n (Apple domains only)"
+grep -v '^#' "$out" | cut -f1 | sort -u | sed 's/^/  domain:   /' || true
+
+# The test that matters: is this a SESSION, or just Apple's tracking crumbs?
+if grep -qE '	(media-user-token|myacinfo)	' "$out"; then
+    echo "  session:  yes (media-user-token/myacinfo present)"
+    echo
+    echo "Now restart huruwave: the Apple Music panel opens already signed in."
+    exit 0
+fi
+
+echo "  session:  NO — no media-user-token/myacinfo in the jar" >&2
+echo
+echo "Sign in to Apple Music in that browser first (music.apple.com), then re-run this." >&2
+exit 1

@@ -47,6 +47,8 @@ bin/test         # the Qt Test binary, offscreen
 ./build/huruwave --search "aphex twin" --provider apple --no-window # headless, Apple
 ./build/huruwave --playlist LM                                      # your Liked Music
 ./build/huruwave --cookies-status                                   # is the session real?
+./build/huruwave --widevine-status                                  # can it play full Apple tracks?
+./build/huruwave --apple-web 'https://music.apple.com/gb/album/...?i=...'  # full track, in-window
 ./build/huruwave ~/Music/track.flac                                 # play a local file
 ./build/huruwave https://music.youtube.com/watch?v=4CE29HLQSnk      # play a URL
 ```
@@ -60,6 +62,7 @@ bin/test         # the Qt Test binary, offscreen
 | `Ctrl` + `←` `→` | previous / next track |
 | `Ctrl` + `L` | jump to the search box |
 | Click a row | play it, and load that list as the queue |
+| `F` | the full track of an Apple preview, in-window (needs the DRM surface) |
 | Drop files | queue local files |
 | `?` | the shortcut list |
 | `Ctrl` + `Q` | quit |
@@ -98,6 +101,9 @@ really do instead of what it is called.
 
 ```bash
 ./build/huruwave --cookies-status          # which source, and what it can do (exit 0 if usable)
+./build/huruwave --widevine-status         # can this build+machine play full Apple tracks?
+./bin/apple-session                        # borrow your browser's Apple session for them
+                                           # (installed as huruwave-apple-session)
 ./build/huruwave --playlist LM --no-window # the live test: Liked Music is account-only
 ```
 
@@ -162,10 +168,19 @@ MUSIC**. Apple search needs no sign-in at all — it is Apple's public catalog A
   `music.apple.com` page instead, and the panel says "preview · the full track
   opens in your browser" while a preview plays, so a 0:30 timer never looks like a
   bug.
-- **Full-track streaming**: not buildable here. It needs FairPlay/Widevine and a
-  licensed MusicKit developer token; there is no CDM on the host (the only one on
-  a typical box lives inside the Brave flatpak) and a fork will not ship Apple's
-  token. Streaming stays in the browser.
+- **Full-track streaming**: plays in-window. Two halves have to exist, and neither
+  ships: a **Widevine CDM** (Chromium is the only engine here that can use one — mpv
+  cannot load a CDM at all) and an **Apple session**. The CDM is the per-user copy a
+  browser on the machine already downloaded, which huruwave finds and points the web
+  engine at; the session is borrowed from your browser with `bin/apple-session`
+  (yt-dlp does the keyring decryption), the same way the YouTube Music side borrows
+  your cookies. Apple's own sign-in inside the panel does **not** work on this Qt —
+  its JS dies against Apple's anti-abuse endpoints and the modal spins forever — so
+  the surface does not try: it opens already signed in. Press `F` on an Apple row (or
+  click the "preview" line), or start it directly:
+  `huruwave --apple-web 'https://music.apple.com/gb/album/…?i=…'`. `huruwave
+  --widevine-status` says what this build and machine have. With no CDM or no
+  session, full tracks open in your browser exactly as before.
 - **Your own non-DRM Apple files** (purchased M4A/ALAC) play like any local file.
 
 Album art shown in the screenshot comes from YouTube's public thumbnail URLs.

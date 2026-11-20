@@ -31,6 +31,22 @@ ApplicationWindow {
     // Which catalog the search box talks to: "ytmusic" or "apple".
     property string provider: "ytmusic"
 
+    // The in-app Apple Music surface. `appleWebAvailable` comes from C++ and is
+    // true only when this build has QtWebEngine AND a Widevine CDM was found on
+    // the machine, so a build with neither keeps the external-browser behaviour
+    // instead of opening a page that cannot play.
+    property bool appleWebOpen: false
+    property url appleWebUrl: ""
+    property string appleWebHeading: ""
+
+    // The analyser follows whichever engine is making sound. mpv covers YouTube
+    // Music and local files; Apple's DRM audio plays in the web surface and never
+    // reaches mpv at all, so it has to be counted here — otherwise the bars would
+    // go flat exactly when Apple Music starts. A pause keeps the analyser alive on
+    // purpose: real silence is an honest flat line.
+    readonly property bool audioActive: appleWebOpen || player.playing
+    onAudioActiveChanged: visualizer.active = audioActive
+
     ListModel { id: results }
     ListModel { id: queue }
 
@@ -75,6 +91,39 @@ ApplicationWindow {
             ytmusic.search(text)
     }
 
+    // Open Apple's own web player in-window for a track the catalog API only
+    // offers a preview of. Returns false when this build or machine cannot do it,
+    // so the caller can fall back to the browser instead of showing nothing.
+    function openAppleWeb(webUrl, heading) {
+        if (!appleWebAvailable || !webUrl || webUrl.length === 0)
+            return false
+        // One stream at a time: leaving the preview playing under the full track
+        // would put two copies of the same song in the speakers.
+        player.stop()
+        appleWebHeading = heading
+        appleWebUrl = webUrl
+        appleWebOpen = true
+        return true
+    }
+
+    function closeAppleWeb() {
+        appleWebOpen = false
+        appleWebUrl = ""
+        appleWebHeading = ""
+    }
+
+    // The full track for whatever is playing, when it is an Apple preview. Bound
+    // to F, and to the preview line in the now-playing panel.
+    function openFullTrackForCurrent() {
+        if (window.currentTrack === null)
+            return
+        if (!window.currentTrack.webUrl || window.currentTrack.webUrl.length === 0)
+            return
+        if (window.openAppleWeb(window.currentTrack.webUrl,
+                                window.currentTrack.title + " · " + window.currentTrack.artist))
+            window.statusLine = qsTr("full track — press play in the panel")
+    }
+
     // A row with nothing to play (an Apple track with no preview) opens its
     // catalog page rather than pretending to play.
     function activateTrack(list, index) {
@@ -86,6 +135,10 @@ ApplicationWindow {
             return
         }
         if (track.webUrl && track.webUrl.length > 0) {
+            if (window.openAppleWeb(track.webUrl, track.title + " · " + track.artist)) {
+                window.statusLine = qsTr("full track — press play in the panel")
+                return
+            }
             Qt.openUrlExternally(track.webUrl)
             window.statusLine = qsTr("no preview available — opened in your browser")
         }
@@ -271,6 +324,13 @@ ApplicationWindow {
         if (initialQuery && initialQuery.length > 0) {
             searchField.text = initialQuery
             window.runSearch(initialQuery)
+        }
+        // --apple-web: open the DRM surface straight away. If this build has no
+        // surface (or this machine has no CDM), fall back to the browser rather than
+        // doing nothing.
+        if (initialAppleWeb && initialAppleWeb.length > 0) {
+            if (!window.openAppleWeb(initialAppleWeb, qsTr("opened from the command line")))
+                Qt.openUrlExternally(initialAppleWeb)
         }
     }
 
@@ -479,6 +539,8 @@ ApplicationWindow {
             position: player.position
             duration: player.duration
             cookiedFrom: ytmusic.cookieSource
+            fullTrackAvailable: appleWebAvailable
+            onFullTrackRequested: window.openFullTrackForCurrent()
         }
     }
 
@@ -507,16 +569,53 @@ ApplicationWindow {
         visible: false
     }
 
+    // The DRM surface, created only while it is open: closing it destroys the view
+    // (which stops its audio) while its persistent profile keeps the sign-in. It
+    // sits above the app and below nothing, so it covers the transport too.
+    Loader {
+        id: appleWebLoader
+        anchors.fill: parent
+        active: window.appleWebOpen
+        source: "AppleWeb.qml"
+        onLoaded: {
+            item.targetUrl = window.appleWebUrl
+            item.heading = window.appleWebHeading
+            item.closed.connect(window.closeAppleWeb)
+        }
+    }
+
     // ---- keys ---------------------------------------------------------------
-    Shortcut { sequence: "Space"; context: Qt.ApplicationShortcut; onActivated: player.togglePause() }
-    Shortcut { sequence: "Right"; context: Qt.ApplicationShortcut; onActivated: player.seekRelative(5) }
-    Shortcut { sequence: "Left"; context: Qt.ApplicationShortcut; onActivated: player.seekRelative(-5) }
+    // Every plain-key shortcut is switched off while the DRM surface is up: the
+    // panel is a web page with a sign-in form, and an application-wide Space or F
+    // would eat the keystroke the user is typing into Apple's own fields.
+    Shortcut { sequence: "Space"; context: Qt.ApplicationShortcut; enabled: !window.appleWebOpen; onActivated: player.togglePause() }
+    Shortcut { sequence: "Right"; context: Qt.ApplicationShortcut; enabled: !window.appleWebOpen; onActivated: player.seekRelative(5) }
+    Shortcut { sequence: "Left"; context: Qt.ApplicationShortcut; enabled: !window.appleWebOpen; onActivated: player.seekRelative(-5) }
     Shortcut { sequence: "Ctrl+Right"; context: Qt.ApplicationShortcut; onActivated: window.advance(1) }
     Shortcut { sequence: "Ctrl+Left"; context: Qt.ApplicationShortcut; onActivated: window.advance(-1) }
-    Shortcut { sequence: "Ctrl+L"; context: Qt.ApplicationShortcut; onActivated: searchField.forceActiveFocus() }
+    Shortcut { sequence: "Ctrl+L"; context: Qt.ApplicationShortcut; enabled: !window.appleWebOpen; onActivated: searchField.forceActiveFocus() }
     Shortcut { sequence: "Ctrl+Q"; context: Qt.ApplicationShortcut; onActivated: Qt.quit() }
     Shortcut { sequence: "?"; context: Qt.ApplicationShortcut; onActivated: help.visible = !help.visible }
-    Shortcut { sequence: "Escape"; context: Qt.ApplicationShortcut; onActivated: help.visible = false }
+    // Escape closes the DRM surface first when it is up, then the help overlay.
+    // One handler, not two: two application shortcuts on the same key are
+    // ambiguous, and only one of them would ever fire.
+    Shortcut {
+        sequence: "Escape"
+        context: Qt.ApplicationShortcut
+        onActivated: {
+            if (window.appleWebOpen)
+                window.closeAppleWeb()
+            else
+                help.visible = false
+        }
+    }
+    // F: the full track for what is playing (an Apple preview), in-window.
+    Shortcut {
+        sequence: "F"
+        context: Qt.ApplicationShortcut
+        enabled: !window.appleWebOpen
+        onActivated: window.openFullTrackForCurrent()
+    }
 
     // Local files dropped on the window are queued, which is the fastest way to
     // get a folder of music in without a file dialog.

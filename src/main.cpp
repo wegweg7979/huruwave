@@ -17,12 +17,44 @@
 #include <functional>
 
 #include "applemusic.h"
+#include "applesession.h"
 #include "player.h"
 #include "theme.h"
 #include "visualizer.h"
+#include "widevine.h"
 #include "ytmusic.h"
 
+#ifdef HURUWAVE_APPLE_WEB
+#include <QWebEngineCookieStore>
+#include <QWebEngineProfile>
+#include <QtWebEngineQuick/QQuickWebEngineProfile>
+#include <QtWebEngineQuick/QtWebEngineQuick>
+#endif
+
 namespace {
+
+#ifdef HURUWAVE_APPLE_WEB
+
+// The DRM surface's web profile, built here rather than in the QML file: the surface
+// BORROWS the user's Apple session, and injecting cookies needs QtWebEngine's C++
+// cookie store — which QML does not expose. The profile is handed to the QML view as
+// a context property (AppleWeb.qml's `profile:`), created before any view exists.
+//
+// Apple answers QtWebEngine's own user agent with an "unsupported browser" page, so
+// a Chrome string goes out — with the engine's own Chromium major, because a UA that
+// disagrees with the client hints (UA says 124, hints say 140) is exactly the kind of
+// inconsistency a web player mishandles.
+QQuickWebEngineProfile *makeAppleSurfaceProfile(QObject *parent)
+{
+    auto *profile = new QQuickWebEngineProfile(QStringLiteral("huruwave-apple"), parent);
+    profile->setPersistentCookiesPolicy(QQuickWebEngineProfile::ForcePersistentCookies);
+    profile->setHttpUserAgent(
+        QStringLiteral("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
+                       "Chrome/140.0.0.0 Safari/537.36"));
+    return profile;
+}
+
+#endif
 
 // Headless run, so the whole path (credentials, request, parsing) can be driven
 // from a shell and checked by an agent -- the pattern Omarchy's own apps use.
@@ -69,6 +101,47 @@ int runHeadless(Provider &provider, const std::function<void(Provider &)> &launc
 
 int main(int argc, char *argv[])
 {
+    // Whether this build carries the DRM surface at all. A build without it is a
+    // perfectly good player — it just points at the browser for full Apple tracks
+    // instead of opening them in-window.
+#ifdef HURUWAVE_APPLE_WEB
+    constexpr bool builtWithAppleWeb = true;
+#else
+    constexpr bool builtWithAppleWeb = false;
+#endif
+
+    // The Widevine CDM is looked for HERE, before anything is constructed: Qt
+    // WebEngine reads --widevine-path out of QTWEBENGINE_CHROMIUM_FLAGS when it
+    // initialises, which is earlier than the command line is parsed (and earlier
+    // than the window exists). The result is kept for --widevine-status and for
+    // the "can this machine play full tracks" answer the QML asks for.
+    const Widevine::Cdm widevine = Widevine::find();
+
+    // The Apple session this machine's browser has (bin/apple-session writes it).
+    // Read here, once: --widevine-status reports it, and the surface's profile is
+    // given its cookies. A missing jar is not an error — the surface then shows
+    // Apple's page unsigned, which is how this behaved before any of it existed.
+    const AppleSession::Jar appleSession = AppleSession::readNetscapeFile(AppleSession::defaultPath());
+
+#ifdef HURUWAVE_APPLE_WEB
+    if (widevine.isValid()) {
+        const QString flag = QStringLiteral("--widevine-path=%1").arg(widevine.path);
+        QString flags = qEnvironmentVariable("QTWEBENGINE_CHROMIUM_FLAGS");
+        // Append rather than overwrite: the variable is a documented user knob, and
+        // a user who set it (or who already passed widevine-path) wins.
+        if (!flags.contains(QStringLiteral("widevine-path"))) {
+            if (!flags.isEmpty())
+                flags += QLatin1Char(' ');
+            flags += flag;
+            qputenv("QTWEBENGINE_CHROMIUM_FLAGS", flags.toUtf8());
+        }
+    }
+    // Both must happen before the QGuiApplication exists, per Qt WebEngine's own
+    // requirements: one shared OpenGL context, and the Quick initialisation.
+    QCoreApplication::setAttribute(Qt::AA_ShareOpenGLContexts);
+    QtWebEngineQuick::initialize();
+#endif
+
     QGuiApplication app(argc, argv);
     app.setApplicationName(QStringLiteral("huruwave"));
     app.setApplicationDisplayName(QStringLiteral("huruwave"));
@@ -98,6 +171,17 @@ int main(int argc, char *argv[])
         QStringLiteral("print which cookie source was found and what it can do, then exit "
                        "(0 when a usable cookie source was found)"));
     parser.addOption(cookiesStatusOption);
+    QCommandLineOption widevineStatusOption(
+        QStringLiteral("widevine-status"),
+        QStringLiteral("print whether this build can play DRM (Apple Music) full tracks in-window "
+                       "and which Widevine CDM it found, then exit (0 when it can)"));
+    parser.addOption(widevineStatusOption);
+    QCommandLineOption appleWebOption(
+        QStringLiteral("apple-web"),
+        QStringLiteral("open the Apple Music DRM surface on this URL at startup (a music.apple.com "
+                       "track, album or playlist URL)"),
+        QStringLiteral("url"));
+    parser.addOption(appleWebOption);
     QCommandLineOption noWindowOption(QStringLiteral("no-window"),
                                       QStringLiteral("with --search: do not open the window"));
     parser.addOption(searchOption);
@@ -142,6 +226,29 @@ int main(int argc, char *argv[])
         return usable ? 0 : 1;
     }
 
+    // The DRM surface's own status, in the same shape as --cookies-status: what
+    // this build can do, and what it would use to do it.
+    if (parser.isSet(widevineStatusOption)) {
+        const bool ready = builtWithAppleWeb && widevine.isValid();
+        QTextStream(stdout)
+            << "apple-web: " << (builtWithAppleWeb ? QStringLiteral("built in (QtWebEngine)")
+                                                   : QStringLiteral("NOT built in (HURUWAVE_APPLE_WEB=OFF)"))
+            << Qt::endl
+            << "widevine:  " << Widevine::describe(widevine) << Qt::endl
+            << "cdm-path:  "
+            << (widevine.isValid() ? widevine.path : QStringLiteral("(none)")) << Qt::endl
+            << "cdm-from:  "
+            << (widevine.isValid() ? widevine.origin : QStringLiteral("(none)")) << Qt::endl
+            << "apple-ssn: " << AppleSession::describe(appleSession) << Qt::endl
+            << "status:    "
+            << (ready ? QStringLiteral("full Apple Music tracks can play in-window (F)")
+                      : (builtWithAppleWeb
+                             ? QStringLiteral("no CDM on this machine — full tracks open in the browser")
+                             : QStringLiteral("this build has no DRM surface — full tracks open in the browser")))
+            << Qt::endl;
+        return ready ? 0 : 1;
+    }
+
     const QString query = parser.value(searchOption).trimmed();
     const QString playlist = parser.value(playlistOption).trimmed();
     const bool appleWanted = parser.value(providerOption).trimmed().toLower() == QStringLiteral("apple");
@@ -160,20 +267,40 @@ int main(int argc, char *argv[])
     }
 
     QQmlApplicationEngine engine;
+
+#ifdef HURUWAVE_APPLE_WEB
+    // The surface's profile and its borrowed session, both before any view exists.
+    // QtWebEngine's cookie store takes the cookies and encrypts them itself on the
+    // way to disk, so nothing here handles the keyring.
+    QQuickWebEngineProfile *appleProfile = makeAppleSurfaceProfile(&app);
+    for (const QNetworkCookie &cookie : appleSession.cookies)
+        appleProfile->cookieStore()->setCookie(cookie);
+    engine.rootContext()->setContextProperty(QStringLiteral("appleProfile"), appleProfile);
+#endif
+
     engine.rootContext()->setContextProperty(QStringLiteral("theme"), &theme);
     engine.rootContext()->setContextProperty(QStringLiteral("player"), &player);
     engine.rootContext()->setContextProperty(QStringLiteral("ytmusic"), &provider);
     engine.rootContext()->setContextProperty(QStringLiteral("apple"), &apple);
     engine.rootContext()->setContextProperty(QStringLiteral("visualizer"), &visualizer);
+    // What the window needs to know about the DRM surface: whether it exists here
+    // (build AND machine), and what it would use. QML only ever opens the surface
+    // when this is true, so an ordinary build keeps the external-browser path.
+    engine.rootContext()->setContextProperty(QStringLiteral("appleWebAvailable"),
+                                             builtWithAppleWeb && widevine.isValid());
+    engine.rootContext()->setContextProperty(QStringLiteral("appleWebCdm"),
+                                             Widevine::describe(widevine));
 
-    // The analyser listens to the OUTPUT device, so it runs only while a stream
-    // is loaded: pausing keeps it alive (real silence is a flat line, which is
+    // The analyser listens to the OUTPUT device, so it runs only while something
+    // is playing: pausing keeps it alive (real silence is a flat line, which is
     // honest and avoids respawning a process every pause), and it stops when the
     // engine goes idle and with the app. A music player that keeps an FFT running
     // behind an idle window is just burning battery.
-    QObject::connect(&player, &Player::stateChanged, &visualizer, [&player, &visualizer] {
-        visualizer.setActive(player.playing());
-    });
+    //
+    // That decision lives in QML now, because mpv is no longer the only thing that
+    // can make sound: the DRM surface plays Apple's audio without mpv ever seeing
+    // it, so a single C++ connection to the player's state would flatten the bars
+    // exactly when a full Apple track starts. See Main.qml's `audioActive`.
     // A search given on the command line is run by the window once it exists,
     // which makes `huruwave --search 'boards of canada'` a usable demo.
     engine.rootContext()->setContextProperty(QStringLiteral("initialQuery"), query);
@@ -181,6 +308,11 @@ int main(int argc, char *argv[])
                                              appleWanted ? QStringLiteral("apple")
                                                          : QStringLiteral("ytmusic"));
     engine.rootContext()->setContextProperty(QStringLiteral("initialPlaylist"), playlist);
+    // --apple-web: the surface opens on this URL as soon as the window is up. It is
+    // what makes the DRM path testable from a shell (and what a desktop file would
+    // launch for "play the full track").
+    engine.rootContext()->setContextProperty(QStringLiteral("initialAppleWeb"),
+                                             parser.value(appleWebOption).trimmed());
 
     // `huruwave /path/to/file` (or a URL) plays straight away, which makes
     // testing and desktop-file launching do the obvious thing. The window is told

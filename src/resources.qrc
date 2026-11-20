@@ -7,5 +7,6 @@
         <file alias="PulseWave.qml">PulseWave.qml</file>
         <file alias="TransportBar.qml">TransportBar.qml</file>
         <file alias="HelpOverlay.qml">HelpOverlay.qml</file>
+        <file alias="AppleWeb.qml">AppleWeb.qml</file>
     </qresource>
 </RCC>

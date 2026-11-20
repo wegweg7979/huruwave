@@ -10,6 +10,10 @@ Rectangle {
     property double position: 0
     property double duration: 0
     property string cookiedFrom: ""
+    // True when this build can play a DRM-protected full track in-window (built
+    // with QtWebEngine and a Widevine CDM was found on the machine).
+    property bool fullTrackAvailable: false
+    signal fullTrackRequested()
     color: theme.darkBackground
 
     Rectangle {
@@ -104,16 +108,29 @@ Rectangle {
         Item { Layout.fillHeight: true }
 
         // Apple serves a 30-second preview unless the track is owned outright, and
-        // saying so stops a 0:30 running time from looking like a bug.
+        // saying so stops a 0:30 running time from looking like a bug. When this
+        // build can play the real thing, the line offers it (clickable, and on F)
+        // instead of pointing at the browser.
         Text {
             Layout.fillWidth: true
             visible: panel.track !== null && panel.track.url
                      && panel.track.url.indexOf("AudioPreview") >= 0
-            text: qsTr("Apple Music preview · the full track opens in your browser")
+            text: panel.fullTrackAvailable && panel.track.webUrl
+                  ? qsTr("Apple Music preview · F plays the full track here")
+                  : qsTr("Apple Music preview · the full track opens in your browser")
             color: theme.yellow
             font.family: theme.fontFamily
             font.pixelSize: 10
             wrapMode: Text.WordWrap
+            HoverHandler {
+                cursorShape: panel.fullTrackAvailable && panel.track && panel.track.webUrl
+                             ? Qt.PointingHandCursor : Qt.ArrowCursor
+            }
+            TapHandler {
+                enabled: panel.fullTrackAvailable && panel.track !== null
+                         && panel.track.webUrl
+                onTapped: panel.fullTrackRequested()
+            }
         }
 
         // Provenance: which account and which app the queue came from.
