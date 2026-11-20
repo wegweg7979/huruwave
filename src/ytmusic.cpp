@@ -69,6 +69,24 @@ QString textOfColumn(const QJsonObject &renderer, int index)
     return text.trimmed();
 }
 
+// yt-dlp reports a duration as raw seconds, while YouTube Music's inner API gives
+// "3:41" and the rest of the UI shows m:ss. Normalising here keeps every row in
+// the same shape -- the playlist view was showing "1673" where search showed
+// "27:53".
+QString formatSeconds(const QString &raw)
+{
+    bool ok = false;
+    const qint64 seconds = raw.trimmed().toLongLong(&ok);
+    if (!ok || seconds <= 0)
+        return raw.trimmed();
+    if (seconds >= 3600)
+        return QStringLiteral("%1:%2:%3")
+            .arg(seconds / 3600)
+            .arg((seconds / 60) % 60, 2, 10, QLatin1Char('0'))
+            .arg(seconds % 60, 2, 10, QLatin1Char('0'));
+    return QStringLiteral("%1:%2").arg(seconds / 60).arg(seconds % 60, 2, 10, QLatin1Char('0'));
+}
+
 // The subtitle column is human text: "Song • Artist • 3:41 • 1.2M plays", in
 // any order and sometimes missing pieces. Pull the artist and the duration out of
 // it instead of trusting a fixed position.
@@ -178,7 +196,8 @@ YtMusic::YtMusic(QObject *parent, const QString &binary)
                     track.insert(QStringLiteral("id"), id);
                     track.insert(QStringLiteral("title"), fields.at(1).trimmed());
                     track.insert(QStringLiteral("artist"), fields.size() > 2 ? fields.at(2).trimmed() : QString());
-                    track.insert(QStringLiteral("duration"), fields.size() > 3 ? fields.at(3).trimmed() : QString());
+                    track.insert(QStringLiteral("duration"),
+                                 formatSeconds(fields.size() > 3 ? fields.at(3) : QString()));
                     track.insert(QStringLiteral("thumbnail"),
                                  QStringLiteral("https://i.ytimg.com/vi/%1/mqdefault.jpg").arg(id));
                     track.insert(QStringLiteral("url"), QStringLiteral("https://music.youtube.com/watch?v=") + id);
@@ -205,17 +224,74 @@ YtMusic::~YtMusic()
     }
 }
 
+namespace {
+
+// Counts the cookies in a Netscape file, and how many of them are session
+// cookies. Names only -- values in that file are live credentials and are never
+// read, stored or printed.
+void countCookieFile(const QString &path, int *cookies, int *sessions)
+{
+    *cookies = 0;
+    *sessions = 0;
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
+        return;
+
+    // `#HttpOnly_` rows are real cookies, not comments -- which matters because
+    // the __Secure-*PSID session cookies are exactly the HttpOnly ones.
+    const QStringList sessionNames{
+        QStringLiteral("SID"), QStringLiteral("SSID"), QStringLiteral("HSID"),
+        QStringLiteral("SAPISID"), QStringLiteral("__Secure-1PSID"), QStringLiteral("__Secure-3PSID"),
+    };
+    while (!file.atEnd()) {
+        const QString line = QString::fromUtf8(file.readLine());
+        if (line.startsWith(QLatin1Char('#')) && !line.startsWith(QStringLiteral("#HttpOnly_")))
+            continue;
+        const QStringList fields = line.trimmed().split(QLatin1Char('\t'));
+        if (fields.size() < 7)
+            continue;
+        ++*cookies;
+        if (sessionNames.contains(fields.at(5)))
+            ++*sessions;
+    }
+}
+
+// Firefox keeps its profile in one of two layouts here: an rpm Firefox under
+// ~/.mozilla/firefox, and the flatpak under
+// ~/.var/app/org.mozilla.firefox/config/mozilla/firefox. yt-dlp handles both from
+// the plain "firefox" spec, so this only has to answer "is there a profile", and
+// the flatpak one is the case that actually exists on this machine -- checking
+// only the rpm path silently fell through to a stale cookies file.
+bool firefoxProfileExists()
+{
+    const QString home = QDir::homePath();
+    const QStringList roots{
+        home + QStringLiteral("/.mozilla/firefox"),
+        home + QStringLiteral("/.var/app/org.mozilla.firefox/config/mozilla/firefox"),
+        home + QStringLiteral("/.var/app/org.mozilla.firefox/.mozilla/firefox"),
+    };
+    for (const QString &root : roots) {
+        QDir dir(root);
+        if (!dir.exists())
+            continue;
+        if (QFileInfo::exists(root + QStringLiteral("/profiles.ini")))
+            return true;
+        // A profile directory is recognisable by its cookie database.
+        const QStringList entries = dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+        for (const QString &entry : entries)
+            if (QFileInfo::exists(root + QLatin1Char('/') + entry + QStringLiteral("/cookies.sqlite")))
+                return true;
+    }
+    return false;
+}
+
+}  // namespace
+
 QString YtMusic::resolveCookieSource(QString *kind)
 {
-    // 1. A Netscape cookies file, which is what bin/import-cookies writes and the
-    //    only source that needs no keyring at all.
     const QString cookiesFile = QDir::homePath() + kCookiesFile;
-    if (QFileInfo::exists(cookiesFile)) {
-        if (kind)
-            *kind = QStringLiteral("file");
-        return cookiesFile;
-    }
-    // 2. This app's own config, which is an explicit choice and wins over any guess.
+
+    // 1. This app's own config, because it is an explicit choice.
     const QString own = readKey(QDir::homePath() + QStringLiteral("/.config/huruwave/config.toml"),
                                QStringLiteral("cookies_from"));
     if (!own.isEmpty()) {
@@ -223,16 +299,39 @@ QString YtMusic::resolveCookieSource(QString *kind)
             *kind = QStringLiteral("browser");
         return own;
     }
-    // 3. Firefox, if there is a profile. It is preferred over the inherited cliamp
-    //    setting below because Firefox cookies are read straight from a plain
-    //    sqlite file: no Secret Service, no keyring, none of the decryption
-    //    failures that make the Chromium path fragile on this machine.
-    if (QFileInfo::exists(QDir::homePath() + QStringLiteral("/.mozilla/firefox/profiles.ini"))) {
+
+    // 2. A Netscape cookies file, but ONLY when it actually carries a session: a
+    //    file of visitor cookies must not shadow a working browser. This machine's
+    //    export held eleven visitor cookies with every SID dropped, and taking it
+    //    on faith is what made account views fail while the app said "signed in".
+    int cookies = 0;
+    int sessions = 0;
+    if (QFileInfo::exists(cookiesFile)) {
+        countCookieFile(cookiesFile, &cookies, &sessions);
+        if (sessions > 0) {
+            if (kind)
+                *kind = QStringLiteral("file");
+            return cookiesFile;
+        }
+    }
+
+    // 3. Firefox, which needs no keyring at all: its cookies are in a plain sqlite
+    //    file, so none of the Secret Service failures that make the Chromium path
+    //    fragile can apply.
+    if (firefoxProfileExists()) {
         if (kind)
             *kind = QStringLiteral("browser");
         return QStringLiteral("firefox");
     }
-    // 4. Last: whatever cliamp is configured with, so an existing setup is
+
+    // 4. The session-less cookies file, if it is all there is: anonymous browsing
+    //    is the same either way, and the status line says what it is.
+    if (QFileInfo::exists(cookiesFile)) {
+        if (kind)
+            *kind = QStringLiteral("file");
+        return cookiesFile;
+    }
+    // 5. Last: whatever cliamp is configured with, so an existing setup is
     //    inherited rather than re-configured.
     const QString inherited = readKey(QDir::homePath() + QStringLiteral("/.config/cliamp/config.toml"),
                                       QStringLiteral("cookies_from"));
@@ -244,6 +343,25 @@ QString YtMusic::resolveCookieSource(QString *kind)
     if (kind)
         *kind = QString();
     return {};
+}
+
+QString YtMusic::describeCookieSource(const QString &source, const QString &kind)
+{
+    if (source.isEmpty())
+        return tr("no cookies — anonymous search only");
+
+    if (kind != QStringLiteral("file"))
+        return tr("browser cookies: %1").arg(source);
+
+    int cookies = 0;
+    int sessions = 0;
+    countCookieFile(source, &cookies, &sessions);
+    if (cookies == 0)
+        return tr("cookie file is empty: %1").arg(source);
+    if (sessions == 0)
+        return tr("cookie file: %1 cookies, no session — account views will fail").arg(cookies);
+    return tr("signed in — cookie file, %1 cookies, %2 of them a session")
+        .arg(cookies).arg(sessions);
 }
 
 void YtMusic::fail(const QString &message)

@@ -45,6 +45,8 @@ bin/test         # the Qt Test binary, offscreen
 ./build/huruwave --search "aphex twin" --provider apple             # search Apple Music
 ./build/huruwave --search "aphex twin" --no-window --json           # headless, for scripts
 ./build/huruwave --search "aphex twin" --provider apple --no-window # headless, Apple
+./build/huruwave --playlist LM                                      # your Liked Music
+./build/huruwave --cookies-status                                   # is the session real?
 ./build/huruwave ~/Music/track.flac                                 # play a local file
 ./build/huruwave https://music.youtube.com/watch?v=4CE29HLQSnk      # play a URL
 ```
@@ -65,22 +67,43 @@ bin/test         # the Qt Test binary, offscreen
 ## Account and cookies
 
 Search works anonymously. Your own playlists ("Your Likes", "Watch Later") and
-personalised results need your YouTube Music session, which is read from cookies:
+personalised results need your YouTube Music session, which is read from cookies.
+Three ways to give it one, and it picks the first that works:
 
-1. `bin/import-cookies` exports them from a Chromium-family browser to
-   `~/.cache/huruwave/cookies.txt` (mode 0600), or
-2. `~/.config/huruwave/config.toml` can name a browser instead:
+1. **Sign into `music.youtube.com` in Firefox once.** Nothing to configure —
+   Firefox cookies live in a plain sqlite file, so no keyring is involved and
+   none of the failure modes below can apply. Flatpak Firefox counts too
+   (`~/.var/app/org.mozilla.firefox/config/mozilla/firefox/…`), which is where
+   this machine's profile lives.
+2. `~/.config/huruwave/config.toml` can name a browser explicitly, which is the
+   way to choose Brave, Chromium or a specific profile:
    ```toml
    cookies_from = "brave+gnomekeyring:/home/you/.config/BraveSoftware/Brave-Origin/Default"
    ```
-   and cliamp's own `cookies_from` is inherited if this app has no config yet.
+3. `bin/import-cookies` exports them to `~/.cache/huruwave/cookies.txt` (mode
+   0600), which suits a headed browser with no keyring access.
 
-Resolution order: cookies file → this app's config → **Firefox, if a profile
-exists** → cliamp's setting. Firefox is in that chain ahead of the inherited
-setting deliberately: it reads its cookies straight from a plain sqlite file, so
-it needs no Secret Service and cannot hit the keyring failures described below —
-signing into `music.youtube.com` once in Firefox is enough, with no configuration
-here at all.
+Resolution order, and the reasoning: this app's config (an explicit choice) → an
+imported cookies file **only if it actually holds a session** → Firefox → the
+session-less cookies file, if nothing better exists → cliamp's own setting.
+
+The session check in step two is the point: a cookies file that merely *exists*
+is not a signed-in session. On this machine the export held 11 visitor cookies
+and every `SID`/`__Secure-1PSID` had been dropped, so account views failed while
+the app cheerfully said "signed in · cookie file". A file of visitor cookies now
+never shadows a working browser, and the sidebar reports what the source can
+really do instead of what it is called.
+
+### Checking what it found
+
+```bash
+./build/huruwave --cookies-status          # which source, and what it can do (exit 0 if usable)
+./build/huruwave --playlist LM --no-window # the live test: Liked Music is account-only
+```
+
+`--playlist LM` (or `WL`, or a playlist id) also works in the window, and it is
+the honest check: anonymous playlists will load without cookies, but Liked Music
+only lists tracks when the session is real.
 
 `bin/import-cookies` is self-verifying on purpose: it tries every candidate
 keyring secret and keeps the one that actually decrypts the profile's cookies,
@@ -88,7 +111,10 @@ because stale duplicates of the "Safe Storage" item are common and a wrong key
 produces garbage rather than an error. It exists because
 `yt-dlp --cookies-from-browser` fails on machines where one Secret Service
 collection cannot be enumerated — `yt-dlp` walks every collection to find its key,
-and a single stale collection aborts the whole lookup.
+and a single stale collection aborts the whole lookup. Note what that means in
+practice: if the exporter cannot decrypt the *account* cookies, it still writes
+out the plain ones and looks successful, which is exactly how a broken export
+passes for a working one.
 
 ## Not in yet
 

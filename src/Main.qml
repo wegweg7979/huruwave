@@ -262,6 +262,12 @@ ApplicationWindow {
             window.currentIndex = 0
             window.currentTrack = track
         }
+        if (initialPlaylist && initialPlaylist.length > 0) {
+            window.viewTitle = initialPlaylist === "LM"
+                    ? qsTr("Liked Music")
+                    : (initialPlaylist === "WL" ? qsTr("Watch Later") : qsTr("Playlist"))
+            ytmusic.loadPlaylist(initialPlaylist)
+        }
         if (initialQuery && initialQuery.length > 0) {
             searchField.text = initialQuery
             window.runSearch(initialQuery)

@@ -28,6 +28,8 @@ class YtMusic : public QObject {
     // "file", "browser" or empty -- the UI says which kind it is rather than
     // showing a raw path, which reads like debug output.
     Q_PROPERTY(QString cookieKind READ cookieKind NOTIFY cookieSourceChanged)
+    // What the cookie source can actually do, not merely which one was found.
+    Q_PROPERTY(QString cookieStatus READ cookieStatus NOTIFY cookieSourceChanged)
 
 public:
     explicit YtMusic(QObject *parent = nullptr, const QString &binary = {});
@@ -35,12 +37,25 @@ public:
 
     bool busy() const { return m_ytdlp.state() != QProcess::NotRunning || m_searchReply != nullptr; }
     QString lastError() const { return m_lastError; }
+
+    // What the resolved cookie source can actually do. A cookies file that
+    // contains no session cookie is not a signed-in session, and the UI must not
+    // say it is: the exported file on this machine held only visitor and rollout
+    // cookies while every `SID`/`__Secure-1PSID` had been dropped, and "signed in
+    // - cookie file" was the resulting false claim. Names only -- values are
+    // secrets and are never read here.
+    static QString describeCookieSource(const QString &source, const QString &kind);
     QString cookieSource() const { return m_cookieSource; }
     QString cookieKind() const { return m_cookieKind; }
+    QString cookieStatus() const { return describeCookieSource(m_cookieSource, m_cookieKind); }
 
-    // Order of preference: a Netscape cookies file (what bin/import-cookies
-    // writes), then this app's own config, then cliamp's config -- so an
-    // existing cliamp setup is inherited rather than re-configured.
+    // Order of preference, and why:
+    //   1. this app's own config, because it is an explicit choice;
+    //   2. a Netscape cookies file, but only when it actually carries a session --
+    //      a file of visitor cookies must not shadow a working browser;
+    //   3. Firefox (rpm or flatpak), which needs no keyring at all;
+    //   4. the session-less cookies file, if nothing better exists;
+    //   5. cliamp's own setting, so an existing setup is inherited.
     static QString resolveCookieSource(QString *kind);
 
     // Parses a WEB_REMIX search response. Static and pure so it can be tested

@@ -14,6 +14,8 @@
 #include <QQuickStyle>
 #include <QTimer>
 
+#include <functional>
+
 #include "applemusic.h"
 #include "player.h"
 #include "theme.h"
@@ -22,12 +24,13 @@
 
 namespace {
 
-// Headless search, so the whole path (credentials, request, parsing) can be
-// driven from a shell and checked by an agent -- the pattern Omarchy's own apps
-// use. Exits 0 or 1 with the error on stderr. Templated because both providers
-// expose the same two signals and the same search() call.
+// Headless run, so the whole path (credentials, request, parsing) can be driven
+// from a shell and checked by an agent -- the pattern Omarchy's own apps use.
+// Exits 0 or 1 with the error on stderr. The provider is a template because both
+// catalogs expose the same two signals, and the action is passed in so one
+// function serves a search and a playlist load.
 template <typename Provider>
-int runHeadlessSearch(Provider &provider, const QString &query, bool asJson)
+int runHeadless(Provider &provider, const std::function<void(Provider &)> &launch, bool asJson)
 {
     int exitCode = 1;
     QObject::connect(&provider, &Provider::tracksReady, &provider,
@@ -57,7 +60,7 @@ int runHeadlessSearch(Provider &provider, const QString &query, bool asJson)
     });
 
     // Ask once the event loop is running, so the reply has somewhere to land.
-    QTimer::singleShot(0, &provider, [&provider, query] { provider.search(query); });
+    QTimer::singleShot(0, &provider, [&provider, &launch] { launch(provider); });
     QCoreApplication::exec();
     return exitCode;
 }
@@ -84,7 +87,17 @@ int main(int argc, char *argv[])
     QCommandLineOption providerOption(QStringLiteral("provider"),
                                       QStringLiteral("which catalog to search: ytmusic (default) or apple"),
                                       QStringLiteral("name"), QStringLiteral("ytmusic"));
+    QCommandLineOption playlistOption(QStringLiteral("playlist"),
+                                      QStringLiteral("load one of your playlists by id "
+                                                     "(LM = Liked Music, WL = Watch Later)"),
+                                      QStringLiteral("id"));
+    parser.addOption(playlistOption);
     QCommandLineOption jsonOption(QStringLiteral("json"), QStringLiteral("with --search: print JSON"));
+    QCommandLineOption cookiesStatusOption(
+        QStringLiteral("cookies-status"),
+        QStringLiteral("print which cookie source was found and what it can do, then exit "
+                       "(0 when a usable cookie source was found)"));
+    parser.addOption(cookiesStatusOption);
     QCommandLineOption noWindowOption(QStringLiteral("no-window"),
                                       QStringLiteral("with --search: do not open the window"));
     parser.addOption(searchOption);
@@ -111,11 +124,39 @@ int main(int argc, char *argv[])
     else
         player.setCookieSource({}, source);
 
+    if (parser.isSet(cookiesStatusOption)) {
+        const QString status = YtMusic::describeCookieSource(source, kind);
+        QTextStream(stdout) << "source: " << (source.isEmpty() ? QStringLiteral("(none)") : source)
+                            << Qt::endl
+                            << "kind:   " << (kind.isEmpty() ? QStringLiteral("(none)") : kind)
+                            << Qt::endl
+                            << "status: " << status << Qt::endl;
+        // 0 when the app will actually send credentials: a cookies file holding a
+        // real session, or a browser store yt-dlp can read. A session-less file is
+        // a 1 even though it exists, because account views fail with it.
+        const bool usable = status.startsWith(QStringLiteral("signed in"))
+                            || kind == QStringLiteral("browser");
+        if (kind == QStringLiteral("browser"))
+            QTextStream(stdout) << "note:   a browser store is chosen; verify it live with "
+                                   "`huruwave --playlist LM --no-window`" << Qt::endl;
+        return usable ? 0 : 1;
+    }
+
     const QString query = parser.value(searchOption).trimmed();
+    const QString playlist = parser.value(playlistOption).trimmed();
     const bool appleWanted = parser.value(providerOption).trimmed().toLower() == QStringLiteral("apple");
+    const bool asJson = parser.isSet(jsonOption);
     if (!query.isEmpty() && parser.isSet(noWindowOption)) {
-        return appleWanted ? runHeadlessSearch<AppleMusic>(apple, query, parser.isSet(jsonOption))
-                           : runHeadlessSearch<YtMusic>(provider, query, parser.isSet(jsonOption));
+        const QString wanted = query;
+        return appleWanted
+                   ? runHeadless<AppleMusic>(apple, [wanted](AppleMusic &p) { p.search(wanted); }, asJson)
+                   : runHeadless<YtMusic>(provider, [wanted](YtMusic &p) { p.search(wanted); }, asJson);
+    }
+    if (!playlist.isEmpty() && parser.isSet(noWindowOption)) {
+        // Loading a playlist is the one thing here that needs the session cookies,
+        // so it doubles as the check that the account actually works.
+        const QString wanted = playlist;
+        return runHeadless<YtMusic>(provider, [wanted](YtMusic &p) { p.loadPlaylist(wanted); }, asJson);
     }
 
     QQmlApplicationEngine engine;
@@ -139,6 +180,7 @@ int main(int argc, char *argv[])
     engine.rootContext()->setContextProperty(QStringLiteral("initialProvider"),
                                              appleWanted ? QStringLiteral("apple")
                                                          : QStringLiteral("ytmusic"));
+    engine.rootContext()->setContextProperty(QStringLiteral("initialPlaylist"), playlist);
 
     // `huruwave /path/to/file` (or a URL) plays straight away, which makes
     // testing and desktop-file launching do the obvious thing. The window is told

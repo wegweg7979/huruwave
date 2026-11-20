@@ -96,12 +96,12 @@ Rectangle {
             Layout.bottomMargin: 18
             Layout.fillWidth: true
             wrapMode: Text.WordWrap
-            text: ytmusic.cookieKind === "file"
-                  ? qsTr("signed in · cookie file")
-                  : (ytmusic.cookieKind === "browser"
-                     ? qsTr("signed in · browser cookies")
-                     : qsTr("anonymous · no cookies found, run bin/import-cookies"))
-            color: ytmusic.cookieKind.length > 0 ? theme.muted : theme.yellow
+            // The truth about the cookie source, worked out by reading it. A
+            // cookies file that exists is not a signed-in session: this machine's
+            // export held only visitor cookies, every `SID` dropped, so saying
+            // "signed in" here is what made a broken account look fine.
+            text: ytmusic.cookieStatus
+            color: ytmusic.cookieStatus.indexOf(qsTr("signed in")) === 0 ? theme.muted : theme.yellow
             font.family: theme.fontFamily
             font.pixelSize: 10
             lineHeight: 1.35

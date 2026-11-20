@@ -1,5 +1,7 @@
 #include <QtTest>
 
+#include <QFile>
+
 #include "applemusic.h"
 #include "theme.h"
 #include "visualizer.h"
@@ -20,6 +22,7 @@ private slots:
     void readsQuotedAndBareValues();
     void parsesYtMusicSearchPayload();
     void parsesAppleMusicSearchPayload();
+    void describesCookieSessions();
     void parsesCavaFrames();
     void dropsGarbledCavaFrames();
 };
@@ -258,6 +261,57 @@ void HuruwaveTests::parsesAppleMusicSearchPayload()
 
     QVERIFY(AppleMusic::parseResults(QByteArrayLiteral("not json")).isEmpty());
     QVERIFY(AppleMusic::parseResults(QByteArrayLiteral("{}")).isEmpty());
+}
+
+// A cookie file that exists is not a session. The file this check exists for held
+// eleven visitor cookies and none of the account ones, while the UI said "signed
+// in · cookie file" -- so the distinction is tested rather than assumed. The
+// HttpOnly rows are the trap: they start with '#' but are cookies, not comments,
+// and they are exactly the __Secure-*PSID ones.
+void HuruwaveTests::describesCookieSessions()
+{
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString path = dir.path() + QStringLiteral("/cookies.txt");
+
+    QVERIFY(YtMusic::describeCookieSource({}, {}).contains(QStringLiteral("no cookies")));
+
+    {
+        QFile empty(path);
+        QVERIFY(empty.open(QIODevice::WriteOnly | QIODevice::Text));
+        empty.write("# Netscape HTTP Cookie File\n");
+        empty.close();
+        QVERIFY(YtMusic::describeCookieSource(path, QStringLiteral("file")).contains(QStringLiteral("empty")));
+    }
+
+    // Visitor cookies only: present, non-empty, and still not a session.
+    {
+        QFile noSession(path);
+        QVERIFY(noSession.open(QIODevice::WriteOnly | QIODevice::Text));
+        noSession.write(".youtube.com\tTRUE\t/\tTRUE\t1795000000\tVISITOR_INFO1_LIVE\tvalue\n");
+        noSession.write(".youtube.com\tTRUE\t/\tTRUE\t1795000000\tSOCS\tvalue\n");
+        noSession.close();
+        const QString described = YtMusic::describeCookieSource(path, QStringLiteral("file"));
+        QVERIFY2(described.contains(QStringLiteral("no session")), qPrintable(described));
+        QVERIFY(!described.startsWith(QStringLiteral("signed in")));
+    }
+
+    // Now the real thing, with the session cookie behind an HttpOnly marker.
+    {
+        QFile signedIn(path);
+        QVERIFY(signedIn.open(QIODevice::WriteOnly | QIODevice::Text));
+        signedIn.write(".youtube.com\tTRUE\t/\tTRUE\t1795000000\tVISITOR_INFO1_LIVE\tvalue\n");
+        signedIn.write("#HttpOnly_.youtube.com\tTRUE\t/\tTRUE\t1795000000\t__Secure-1PSID\tvalue\n");
+        signedIn.close();
+        const QString described = YtMusic::describeCookieSource(path, QStringLiteral("file"));
+        QVERIFY2(described.startsWith(QStringLiteral("signed in")), qPrintable(described));
+        QVERIFY(described.contains(QStringLiteral("2 cookies")));
+    }
+
+    // A browser source cannot be read from here, and is not claimed to be either.
+    const QString browser = YtMusic::describeCookieSource(QStringLiteral("firefox"), QStringLiteral("browser"));
+    QVERIFY(browser.contains(QStringLiteral("firefox")));
+    QVERIFY(!browser.startsWith(QStringLiteral("signed in")));
 }
 
 QTEST_MAIN(HuruwaveTests)
