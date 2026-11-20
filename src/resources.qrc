@@ -1,0 +1,11 @@
+<RCC>
+    <qresource prefix="/">
+        <file alias="Main.qml">Main.qml</file>
+        <file alias="Sidebar.qml">Sidebar.qml</file>
+        <file alias="TrackDelegate.qml">TrackDelegate.qml</file>
+        <file alias="NowPlaying.qml">NowPlaying.qml</file>
+        <file alias="PulseWave.qml">PulseWave.qml</file>
+        <file alias="TransportBar.qml">TransportBar.qml</file>
+        <file alias="HelpOverlay.qml">HelpOverlay.qml</file>
+    </qresource>
+</RCC>

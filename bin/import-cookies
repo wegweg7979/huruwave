@@ -1,0 +1,300 @@
+#!/usr/bin/env python3
+"""Export a Chromium-family browser's YouTube cookies to a Netscape cookie file.
+
+Why this exists: `yt-dlp --cookies-from-browser brave+gnomekeyring:...` dies with
+"ERROR: Item does not exist!" on this machine. yt-dlp finds the browser's
+"Safe Storage" key by enumerating EVERY Secret Service collection, and this box
+has a stale collection (Default_keyring) whose item list throws
+ItemNotFoundException part-way through -- which aborts the whole lookup even
+though a usable key is sitting in another collection. Exporting to a Netscape
+file sidesteps it: `--cookies <file>` needs no keyring at all.
+
+The key lookup here is deliberately SELF-VERIFYING rather than label-based.
+Stale duplicates of the "Safe Storage" item are common (this machine has a
+leftover keyring from an earlier install), and picking the wrong one yields a
+key that decrypts to garbage instead of failing loudly. So every candidate
+secret is tried against the profile's cookies and the one that actually
+decrypts wins.
+
+Decryption is Chromium's Linux v11 scheme, copied from yt-dlp's own
+implementation (yt_dlp/cookies.py, which cites os_crypt_linux.cc):
+AES-128-CBC with key = PBKDF2-HMAC-SHA1(secret, salt=b"saltysalt",
+iterations=1, dklen=16) and an IV of 16 spaces. Recent Chromium prefixes the
+plaintext with SHA256(host_key), which is detected and stripped.
+
+Cookie VALUES are never printed; only counts.
+"""
+
+from __future__ import annotations
+
+import argparse
+import glob
+import hashlib
+import os
+import sqlite3
+import sys
+import tempfile
+import time
+
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+
+CHROME_EPOCH_OFFSET = 11644473600  # seconds between 1601-01-01 and 1970-01-01
+
+PROFILE_GLOBS = {
+    "brave": [
+        "~/.config/BraveSoftware/*/Default",
+        "~/.var/app/com.brave.Browser/config/BraveSoftware/*/Default",
+    ],
+    "chromium": [
+        "~/.config/chromium/*/",
+        "~/.var/app/org.chromium.Chromium/config/chromium/*/",
+    ],
+}
+
+# Domains whose cookies matter for YouTube Music playback.
+WANTED_SUFFIXES = ("youtube.com", "google.com", "googlevideo.com", "ytimg.com", "gstatic.com", "googleusercontent.com")
+
+
+def candidate_secrets(browser: str) -> list[tuple[str, bytes]]:
+    """Every plausible cookie-encryption secret, as (description, secret).
+
+    Nothing is trusted on its label alone: the caller scores each candidate by
+    how many cookies it actually decrypts.
+    """
+    import secretstorage
+
+    labels = {
+        f"{browser.capitalize()} Safe Storage",
+        "Brave Safe Storage",
+        "Chrome Safe Storage",
+        "Chromium Safe Storage",
+    }
+    attributes = [{"application": name} for name in (browser, browser.capitalize(), f"{browser}-browser", "chrome", "chromium")]
+
+    found: list[tuple[str, bytes]] = []
+    seen: set[bytes] = set()
+
+    def add(desc: str, secret: bytes | None) -> None:
+        if not secret:
+            return
+        secret = bytes(secret)
+        if secret in seen:
+            return
+        seen.add(secret)
+        found.append((desc, secret))
+
+    bus = secretstorage.dbus_init()
+
+    # get_all_collections() lists collection paths even when one of them cannot
+    # be enumerated, so it is safe to use as a path source.
+    try:
+        collections = list(secretstorage.get_all_collections(bus))
+    except Exception as exc:  # noqa: BLE001
+        print(f"warning: could not list collections: {exc!r}", file=sys.stderr)
+        collections = []
+
+    for collection in collections:
+        path = collection.collection_path
+        for attrs in attributes:
+            try:
+                unlocked, locked = collection.search_items(attrs)
+            except Exception:  # noqa: BLE001 - a broken collection must not stop us
+                continue
+            for item_path in list(unlocked) + list(locked):
+                try:
+                    item = secretstorage.Item(bus, item_path)
+                    label = item.get_label()
+                except Exception:  # noqa: BLE001
+                    continue
+                if label in labels:
+                    add(f"{path} search {attrs!r} label={label!r}", item.get_secret())
+        # Enumerating is the other way in, for collections that do not break.
+        try:
+            items = list(collection.get_all_items())
+        except Exception as exc:  # noqa: BLE001
+            print(f"note: {path} cannot be enumerated ({exc}); skipped", file=sys.stderr)
+            continue
+        for item in items:
+            try:
+                label = item.get_label()
+            except Exception:  # noqa: BLE001
+                continue
+            if label in labels:
+                add(f"{path} label={label!r}", item.get_secret())
+
+    # Chromium falls back to a hardcoded password when no keyring is available.
+    add("fallback: hardcoded 'peanuts'", b"peanuts")
+    return found
+
+
+def derive_key(secret: bytes) -> bytes:
+    """Chromium on Linux: AES-128 key = PBKDF2-HMAC-SHA1(secret, "saltysalt", 1, 16)."""
+    return PBKDF2HMAC(
+        algorithm=hashes.SHA1(),
+        length=16,
+        salt=b"saltysalt",
+        iterations=1,
+    ).derive(secret)
+
+
+def looks_like_text(value: str) -> bool:
+    """Reject garbage from a wrong key instead of writing it into the cookie file.
+
+    Cookie values are opaque, but they are text: if a decryption produced mostly
+    non-printable bytes the key was wrong, and a file full of binary makes yt-dlp
+    fail with "UnicodeEncodeError: 'latin-1' codec" much further downstream.
+    """
+    if not value:
+        return False
+    printable = sum(1 for ch in value if ch.isprintable())
+    return printable / len(value) >= 0.9
+
+
+def decrypt_v11(blob: bytes, key: bytes, host_key: str) -> str | None:
+    """Chromium v11: AES-128-CBC, 16-space IV, optional SHA256(host) prefix."""
+    if not blob.startswith(b"v11"):
+        return None
+    body = blob[3:]
+    if len(body) % 16:
+        return None
+    decryptor = Cipher(algorithms.AES(key), modes.CBC(b" " * 16)).decryptor()
+    plain = decryptor.update(body) + decryptor.finalize()
+    plain = plain[: -plain[-1]] if plain and 1 <= plain[-1] <= 16 else plain
+    digest = hashlib.sha256(host_key.encode()).digest()
+    if plain.startswith(digest):
+        plain = plain[len(digest):]
+    text = plain.decode("utf-8", "replace")
+    return text if looks_like_text(text) else None
+
+
+def find_profiles(browser: str) -> list[str]:
+    found: list[str] = []
+    for pattern in PROFILE_GLOBS[browser]:
+        found.extend(glob.glob(os.path.expanduser(pattern)))
+    return sorted({os.path.normpath(p) for p in found})
+
+
+def read_cookies(db_path: str) -> list[tuple]:
+    with open(db_path, "rb") as src, tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False) as tmp:
+        tmp.write(src.read())
+        tmp_path = tmp.name
+    try:
+        con = sqlite3.connect(f"file:{tmp_path}?mode=ro", uri=True)
+        return con.execute(
+            "SELECT host_key, name, value, encrypted_value, path, expires_utc, is_secure, is_httponly "
+            "FROM cookies"
+        ).fetchall()
+    finally:
+        con.close()
+        os.unlink(tmp_path)
+
+
+def build_netscape_lines(rows: list[tuple], key: bytes) -> tuple[int, int, list[str]]:
+    """Return (kept, undecryptable, lines) for one profile under one key."""
+    kept = 0
+    failed = 0
+    lines: list[str] = []
+    now = time.time()
+    for host_key, name, value, enc, path, expires_utc, is_secure, is_httponly in rows:
+        if not host_key.endswith(WANTED_SUFFIXES):
+            continue
+        if not value:
+            decrypted = decrypt_v11(bytes(enc), key, host_key) if enc else None
+            if not decrypted:
+                failed += 1
+                continue
+            value = decrypted
+        expires = (expires_utc / 1_000_000) - CHROME_EPOCH_OFFSET if expires_utc else now + 365 * 86400
+        if expires < now:
+            continue  # already expired; yt-dlp would drop it anyway
+        prefix = "#HttpOnly_" if is_httponly else ""
+        lines.append(
+            "\t".join(
+                [
+                    f"{prefix}{host_key}",
+                    "TRUE" if host_key.startswith(".") else "FALSE",
+                    path or "/",
+                    "TRUE" if is_secure else "FALSE",
+                    str(int(expires)),
+                    name,
+                    value,
+                ]
+            )
+        )
+        kept += 1
+    return kept, failed, lines
+
+
+def write_netscape(lines: list[str], out_path: str) -> None:
+    header = [
+        "# Netscape HTTP Cookie File",
+        "# Exported for yt-dlp by huruwave's bin/import-cookies.",
+        "",
+    ]
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
+    tmp_out = out_path + ".tmp"
+    with open(tmp_out, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(header + lines) + "\n")
+    os.chmod(tmp_out, 0o600)
+    os.replace(tmp_out, out_path)
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="Export browser cookies to a Netscape file for yt-dlp.")
+    ap.add_argument("--browser", default="brave", choices=sorted(PROFILE_GLOBS))
+    ap.add_argument("--profile", help="explicit profile directory (default: every profile)")
+    ap.add_argument("--out", default="~/.cache/huruwave/cookies.txt")
+    ap.add_argument("--list", action="store_true", help="only list candidate profiles")
+    args = ap.parse_args()
+
+    profiles = [args.profile] if args.profile else find_profiles(args.browser)
+    if not profiles:
+        raise SystemExit(f"no {args.browser} profiles found")
+    if args.list:
+        for p in profiles:
+            db = os.path.join(p, "Cookies")
+            print(f"{p}  cookies_db={'yes' if os.path.exists(db) else 'no'}")
+        return 0
+
+    secrets = candidate_secrets(args.browser)
+    if not secrets:
+        raise SystemExit(
+            f"no '{args.browser.capitalize()} Safe Storage' secret found; "
+            "sign in to YouTube Music in that browser first"
+        )
+    print(f"candidate secrets: {len(secrets)}")
+    for desc, _secret in secrets:
+        print(f"  - {desc}")
+
+    # Score every (profile, secret) pair and keep the winner: a stale profile or a
+    # stale duplicate key must not be able to overwrite a good export.
+    best = (0, None, None, [])
+    for profile in profiles:
+        db = os.path.join(profile, "Cookies")
+        if not os.path.exists(db):
+            continue
+        rows = read_cookies(db)
+        for desc, secret in secrets:
+            kept, failed, lines = build_netscape_lines(rows, derive_key(secret))
+            if kept:
+                print(f"  {profile} + {desc}: {kept} cookies ({failed} undecryptable)")
+            if kept > best[0]:
+                best = (kept, profile, desc, lines)
+
+    if not best[1]:
+        raise SystemExit(
+            "no cookies could be decrypted with any candidate key; "
+            "the browser may have switched password stores (try --password-store=gnome-libsecret)"
+        )
+    out_path = os.path.expanduser(args.out)
+    write_netscape(best[3], out_path)
+    print(f"exported {best[0]} cookies from {best[1]}")
+    print(f"using key: {best[2]}")
+    print(f"written to {out_path} (mode 0600; values never printed)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
