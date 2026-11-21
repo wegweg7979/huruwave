@@ -13,6 +13,9 @@ Rectangle {
     // True when this build can play a DRM-protected full track in-window (built
     // with QtWebEngine and a Widevine CDM was found on the machine).
     property bool fullTrackAvailable: false
+    // True while the Apple DRM surface is up: it fills the window, so this panel —
+    // the spectrum bars included — is behind it and there is nothing to animate.
+    property bool surfaceOpen: false
     signal fullTrackRequested()
     color: theme.darkBackground
 
@@ -98,11 +101,14 @@ Rectangle {
         PulseWave {
             Layout.fillWidth: true
             Layout.preferredHeight: 84
-            playing: panel.playing
+            // Nothing to animate while the DRM surface covers this panel — and the
+            // fallback must not take over in the analyser's place, or the app would
+            // keep repainting the window for bars behind it (Main.qml's audioActive).
+            playing: panel.playing && !panel.surfaceOpen
             colour: theme.accent
             // Real bands while cava is feeding us frames; empty means the panel
             // falls back to its synthetic animation (see PulseWave.qml).
-            values: visualizer.values
+            values: panel.surfaceOpen ? [] : visualizer.values
         }
 
         Item { Layout.fillHeight: true }

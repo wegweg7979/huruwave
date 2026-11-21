@@ -297,10 +297,11 @@ int main(int argc, char *argv[])
     // engine goes idle and with the app. A music player that keeps an FFT running
     // behind an idle window is just burning battery.
     //
-    // That decision lives in QML now, because mpv is no longer the only thing that
-    // can make sound: the DRM surface plays Apple's audio without mpv ever seeing
-    // it, so a single C++ connection to the player's state would flatten the bars
-    // exactly when a full Apple track starts. See Main.qml's `audioActive`.
+    // That decision lives in QML now, because mpv is no longer the only engine that
+    // can make sound — but the analyser only follows audio the user can SEE: the DRM
+    // surface covers the whole window while it is open, so the bars (and cava with
+    // them) have nothing to show then and Main.qml turns them off. See Main.qml's
+    // `audioActive`.
     // A search given on the command line is run by the window once it exists,
     // which makes `huruwave --search 'boards of canada'` a usable demo.
     engine.rootContext()->setContextProperty(QStringLiteral("initialQuery"), query);

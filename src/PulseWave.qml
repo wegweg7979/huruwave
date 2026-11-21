@@ -11,7 +11,7 @@ Item {
 
     property bool playing: false
     property color colour: "#7aa2f7"
-    property int bars: 24
+    property int bars: 16
     // Empty means "no analyser": draw the fallback animation instead.
     property var values: []
 

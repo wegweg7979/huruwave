@@ -39,12 +39,15 @@ ApplicationWindow {
     property url appleWebUrl: ""
     property string appleWebHeading: ""
 
-    // The analyser follows whichever engine is making sound. mpv covers YouTube
-    // Music and local files; Apple's DRM audio plays in the web surface and never
-    // reaches mpv at all, so it has to be counted here — otherwise the bars would
-    // go flat exactly when Apple Music starts. A pause keeps the analyser alive on
-    // purpose: real silence is an honest flat line.
-    readonly property bool audioActive: appleWebOpen || player.playing
+    // The analyser follows audio the user can SEE. mpv covers YouTube Music and
+    // local files; Apple's DRM audio plays in the web surface instead and never
+    // reaches mpv — but that surface covers the whole window (see the Loader below),
+    // so the bars sit behind it. Leaving the analyser on then spent cava plus a
+    // full-window repaint on pixels nobody can see (measured on studiobox2: the
+    // render engine still sat at ~28% with that panel open and playback stopped),
+    // so it stays off while the surface is up and comes back when it closes. A pause
+    // keeps it alive on purpose: real silence is an honest flat line.
+    readonly property bool audioActive: !appleWebOpen && player.playing
     onAudioActiveChanged: visualizer.active = audioActive
 
     ListModel { id: results }
@@ -540,6 +543,7 @@ ApplicationWindow {
             duration: player.duration
             cookiedFrom: ytmusic.cookieSource
             fullTrackAvailable: appleWebAvailable
+            surfaceOpen: window.appleWebOpen
             onFullTrackRequested: window.openFullTrackForCurrent()
         }
     }

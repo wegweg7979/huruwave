@@ -11,10 +11,15 @@
 
 namespace {
 
-// Matches the panel's design: the same bar count the synthetic animation drew,
-// so the visual weight of the panel does not change when real data arrives.
-constexpr int kBars = 24;
-constexpr int kFrameRate = 30;
+// The panel's design, not a taste knob: the fallback animation draws this many
+// bars, so the visual weight does not change when real data arrives (visualizer.cpp
+// asks cava for the same count).
+constexpr int kBars = 16;
+// Deliberately lower than the first design's 30: every analyser frame is a Qt Quick
+// repaint of the whole window, and the bars are the app's own continuous render
+// load, so halving the rate is the cheapest GPU saving that stays a spectrum. The
+// synthetic fallback in PulseWave.qml animates at the same rate.
+constexpr int kFrameRate = 15;
 // cava's ascii range; the values it prints are 0..this.
 constexpr int kAsciiMaxRange = 100;
 
