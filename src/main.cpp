@@ -331,7 +331,10 @@ int main(int argc, char *argv[])
 
     engine.rootContext()->setContextProperty(QStringLiteral("initialUrl"), playable);
 
-    engine.load(QUrl(QStringLiteral("qrc:/Main.qml")));
+    // Loaded through the QML module, not by a qrc:/ URL: the module's files are
+    // compiled at build time, which is what keeps a stale per-user QML cache from
+    // serving the previous build's UI (see the comment in CMakeLists.txt).
+    engine.loadFromModule("huruwave", "Main");
     if (engine.rootObjects().isEmpty())
         return 1;
 
