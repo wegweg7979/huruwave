@@ -14,7 +14,7 @@
 %global debug_package %{nil}
 
 Name:           huruwave
-Version:        0.2.1
+Version:        0.2.2
 Release:        1%{?dist}
 Summary:        An Omarchy-native music player: YouTube Music, Apple Music search and local files
 
@@ -123,6 +123,17 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/huruwave.desktop
 %{_datadir}/applications/huruwave.desktop
 
 %changelog
+* Sat Nov 21 2026 wegweg7979 <diode-crumble-0h@icloud.com> - 0.2.2-1
+- The spectrum analyser now follows audio the user can SEE. While the Apple DRM
+  surface is open it fills the window, so the bars — and cava with them — were
+  repainting a window nobody can see: measured on studiobox2, that state held the
+  GPU's render engine at ~28% with playback stopped and cost cava 3.3% of a core
+  for nothing. With the surface up the analyser stays off and the synthetic
+  fallback is suppressed with it; closing the surface brings it back.
+- cava's frames arrive at 15/s in 16 bars rather than 30/s in 24: an analyser frame
+  is a Qt Quick repaint of the whole window, and it is the only continuous render
+  load the app itself creates. The fallback animation and the panel's bar count
+  follow the same numbers so the panel looks unchanged.
 * Sat Nov 21 2026 wegweg7979 <diode-crumble-0h@icloud.com> - 0.2.1-1
 - The QML is compiled into the binary at build time (qt_add_qml_module /
   qmlcachegen) instead of being compiled at the first run. Qt caches
