@@ -14,7 +14,7 @@
 %global debug_package %{nil}
 
 Name:           huruwave
-Version:        0.2.0
+Version:        0.2.1
 Release:        1%{?dist}
 Summary:        An Omarchy-native music player: YouTube Music, Apple Music search and local files
 
@@ -123,6 +123,17 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/huruwave.desktop
 %{_datadir}/applications/huruwave.desktop
 
 %changelog
+* Sat Nov 21 2026 wegweg7979 <diode-crumble-0h@icloud.com> - 0.2.1-1
+- The QML is compiled into the binary at build time (qt_add_qml_module /
+  qmlcachegen) instead of being compiled at the first run. Qt caches
+  runtime-compiled QML in ~/.cache/<org>/huruwave/qmlcache, keyed by the document
+  URL, and it reused a unit an EARLIER build of the app had written: after
+  updating to 0.2.0 the Now-Playing panel still drew the pre-0.2.0 line ("the full
+  track opens in your browser" instead of the F line) and the Apple DRM surface
+  looked absent, while the same binary reported it could play full tracks
+  in-window. A unit shipped inside the binary is never resolved through that
+  cache.
+- src/resources.qrc is gone: the QML module owns the file list.
 * Fri Nov 20 2026 wegweg7979 <diode-crumble-0h@icloud.com> - 0.2.0-1
 - Full Apple Music tracks now play in-window: a QtWebEngine surface
   (HURUWAVE_APPLE_WEB, on in the package) shows Apple's own web player, using a
