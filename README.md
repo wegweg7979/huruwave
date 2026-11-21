@@ -6,12 +6,6 @@ files in one window that follows the desktop theme.
 ![huruwave playing a track](docs/screenshot.png)
 
 
-- **An embedded Chromium (QtWebEngine) for exactly one job**: Apple Music's full,
-  DRM-protected tracks, which mpv cannot play because it cannot load a Widevine CDM
-  at all. It is the only surface in the app that is not mpv, it is opt-in
-  (`-DHURUWAVE_APPLE_WEB=ON`; the package turns it on), and it carries no CDM and no
-  credentials: it points the web engine at the CDM a browser on the machine already
-  downloaded, and opens Apple's own player with a session borrowed from that browser.
 
 ## Running it
 
