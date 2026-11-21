@@ -8,7 +8,9 @@ files in one window that follows the desktop theme.
 It does what `cliamp` does, as a GUI: search YouTube Music, browse your own
 playlists, queue tracks, scrub, shuffle, repeat, and play local files dropped on
 the window. It also searches the **Apple Music catalog** and plays Apple's
-30-second previews in-place. The look is Omarchy's — the live theme's colours,
+30-second previews in-place — or the **full track, in-window**, when the optional
+DRM surface is built and the machine has a Widevine CDM and a browser session to
+borrow (see below). The look is Omarchy's — the live theme's colours,
 JetBrainsMono Nerd Font, sharp corners (or the radius Hyprland actually uses), a
 2px accent bar to mark the current row, and no Material chrome.
 
@@ -33,6 +35,12 @@ JetBrainsMono Nerd Font, sharp corners (or the radius Hyprland actually uses), a
   artwork and previews. No authentication, no developer token: `artworkUrl100` is
   rewritten to `600x600bb` for full-size art, and `previewUrl` is a real
   30-second AAC file that mpv plays directly.
+- **An embedded Chromium (QtWebEngine) for exactly one job**: Apple Music's full,
+  DRM-protected tracks, which mpv cannot play because it cannot load a Widevine CDM
+  at all. It is the only surface in the app that is not mpv, it is opt-in
+  (`-DHURUWAVE_APPLE_WEB=ON`; the package turns it on), and it carries no CDM and no
+  credentials: it points the web engine at the CDM a browser on the machine already
+  downloaded, and opens Apple's own player with a session borrowed from that browser.
 
 ## Running it
 
@@ -52,6 +60,10 @@ bin/test         # the Qt Test binary, offscreen
 ./build/huruwave ~/Music/track.flac                                 # play a local file
 ./build/huruwave https://music.youtube.com/watch?v=4CE29HLQSnk      # play a URL
 ```
+
+`bin/build` writes into `build/`. On Hurunagus it is already installed from its own
+COPR (`wegweg7979/huruwave`) and cava ships in the image, so there is nothing to
+build there — just run `huruwave`.
 
 ## Shortcuts
 
@@ -128,7 +140,7 @@ Opacity is the **compositor's** job on this desktop, not the app's, so huruwave 
 opted in from the Hyprland config — one line in `~/.config/hypr/looknfeel.lua`:
 
 ```lua
-o.transparent_window("huruwave", "0.94 0.90")   -- active / inactive
+o.transparent_window("huruwave", "0.80 0.76")   -- active / inactive
 ```
 
 Then reload (`hyprctl reload config-only`) and restart the app, because the rule
@@ -151,23 +163,23 @@ machine:
 
 ## Not in yet
 
-- Apple Music *streaming* — see below for what is possible and why.
 - A file picker: drag-and-drop and a path argument work today; the portal picker
   (`org.freedesktop.portal.FileChooser`) is the next step.
 - A local-library browser: `Library`/`Album`/`Artist` views over `~/Music`.
 
-## Apple Music: what works, what cannot
+## Apple Music: previews, and full tracks
 
 Two words in the header switch the search box between **YT MUSIC** and **APPLE
 MUSIC**. Apple search needs no sign-in at all — it is Apple's public catalog API.
 
 - **Search, artwork, album and duration**: yes, no auth.
-- **Playback**: 30-second previews play in-app, because Apple publishes a preview
+- **Previews**: 30-second previews play in-app, because Apple publishes a preview
   file per track and mpv decodes it (verified: 44100 Hz stereo, a 30.00s running
   time). A row whose preview is missing is not offered as playable — it opens its
-  `music.apple.com` page instead, and the panel says "preview · the full track
-  opens in your browser" while a preview plays, so a 0:30 timer never looks like a
-  bug.
+  `music.apple.com` page instead. While a preview plays, the panel says so and says
+  which of the two things `F` will do — "F plays the full track here" with the DRM
+  surface, "the full track opens in your browser" without it — so a 0:30 running
+  time never looks like a bug.
 - **Full-track streaming**: plays in-window. Two halves have to exist, and neither
   ships: a **Widevine CDM** (Chromium is the only engine here that can use one — mpv
   cannot load a CDM at all) and an **Apple session**. The CDM is the per-user copy a
@@ -183,7 +195,8 @@ MUSIC**. Apple search needs no sign-in at all — it is Apple's public catalog A
   session, full tracks open in your browser exactly as before.
 - **Your own non-DRM Apple files** (purchased M4A/ALAC) play like any local file.
 
-Album art shown in the screenshot comes from YouTube's public thumbnail URLs.
+Album art shown in the screenshot comes from Apple's catalog artwork
+(`is1-ssl.mzstatic.com`), the same URLs the search results use.
 
 ## License
 
