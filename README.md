@@ -1,5 +1,7 @@
 # huruwave
 
+![huruwave](assets/huruwave-wordmark.png)
+
 An Omarchy-native music player: YouTube Music, Apple Music and local
 files in one window that follows the desktop theme.
 
